@@ -14,7 +14,6 @@
   * Current Menubar app version: ```v1.4.1```
   * If you want to see the changes that happen to the code, please head into the Change log with [This link](https://github.com/hackintosh-user/hack-touchid/blob/main/CHANGELOG.md)
   * Please refrence the Table that has the Supported sensors to make sure you can use this tool. [This link should take you there](https://github.com/hackintosh-user/hack-touchid/tree/main#supported-sensors)
-  * Current Set ETA: **Mid October 2026**: Please keep in mind that this is only an ETA and not confirmed release date. Stuff could happen, it could release earlier or later on!
   * [link to the GitHub page](https://hackintosh-user.github.io/hack-touchid/index.html)
 </p>
 
