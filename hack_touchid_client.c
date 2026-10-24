@@ -6325,6 +6325,9 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
      * every family and fails on Homebrew packages the machine never needed (openssl@3 and
      * innoextract belong to Metallica only). Without --sensor, prep_and_build.sh auto-detects, and
      * when it detects nothing it builds all families but skips the ones whose packages are missing. */
+    /* build_family only drives the progress steps below ("all" when unknown). */
+    const char *build_family = (g_detected_sensor && g_detected_sensor->family)
+                                   ? g_detected_sensor->family : "all";
     char sensor_arg[96] = "";
     if (g_detected_sensor && g_detected_sensor->family)
         snprintf(sensor_arg, sizeof(sensor_arg), "--sensor %s ", g_detected_sensor->family);
