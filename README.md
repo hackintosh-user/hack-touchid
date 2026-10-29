@@ -44,7 +44,6 @@ This Table will have the currently Supported Sensors or sensors in **Development
 | Prometheus 97          | 138A | 0097 | **Developing & actively testing**                                 |                    |
 | Prometheus 9d          | 138A | 009d | **Developing / Supposed to work according to python-validity**    |                    |
 | UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing**                                 |                    | 
-| Validity VFS101        | 138A | 0001 | **Planned / only plans until i get access to the device**         |                    | 
 
  * Please Keep in Mind that some sensor names are **too long to fit in the table** the VID:PID for each currently or planned sensor will be in the table and regardless the client itself checks if your sensor is supported.
  * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesn't work.
