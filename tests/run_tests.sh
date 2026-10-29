@@ -22,3 +22,10 @@ clang "$SCRIPT_DIR/test_matcher.c" "$ROOT_DIR/shared/sen/hack-touchid-matcher.c"
 
 echo "==> Running test_matcher..."
 "$SCRIPT_DIR/test_matcher"
+
+echo "==> Building test_led..."
+clang "$SCRIPT_DIR/test_led.c" -o "$SCRIPT_DIR/test_led" \
+    -I"$ROOT_DIR/vfs5011" -Wall
+
+echo "==> Running test_led..."
+"$SCRIPT_DIR/test_led"
