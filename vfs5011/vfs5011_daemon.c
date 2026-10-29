@@ -46,6 +46,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <time.h>
+#include <sys/time.h>
 #include <sys/sysctl.h>
 #include <ctype.h>
 #include <dirent.h>
@@ -57,11 +58,22 @@
 #include <IOKit/IOKitLib.h>
 
 #include "vfs5011_proto.h"
+#include "vfs5011_led.h"
 #include "hack-touchid-matcher.h"
 #include "hack-touchid-menubar-ipc.h"
 
 #define VFS5011_VID 0x138a
 #define VFS5011_PID 0x0018
+
+/* Timing marks for slow-auth diagnosis: wall clock with milliseconds, one line
+ * per step, so the gaps between steps show where the time goes. */
+static void tmark(const char *what) {
+    struct timeval tv;
+    struct tm tmv;
+    gettimeofday(&tv, NULL);
+    localtime_r(&tv.tv_sec, &tmv);
+    printf("  (T %02d:%02d:%02d.%03d %s)\n", tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (int)(tv.tv_usec / 1000), what);
+}
 
 enum action_type { ACTION_SEND, ACTION_RECEIVE };
 struct usb_action {
@@ -199,13 +211,119 @@ static int bulk_transfer_with_pipe_retry(libusb_device_handle *handle, int endpo
     return r;
 }
 
+/* ------------------------------------------------------------------ *
+ * Sensor LED (see vfs5011_led.h for the packet format)
+ * ------------------------------------------------------------------ *
+ * Two things, both best effort and never allowed to break authentication:
+ *  - the saved brightness (led_brightness.conf) is applied to the idle
+ *    "ready for swipe" blink that init_17 / prepare_03 already send;
+ *  - after a swipe that did not match, the sensor shows a short red pulse
+ *    (the attention LED, port 2 by default). */
+static atomic_bool g_led_red_pending = false; /* show red at the next LED step of a sequence */
+static atomic_bool g_led_restore_idle = false; /* red replaced the idle light: bring it back once red is over */
+
+static long long led_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+#define LED_RED_PULSE_MS 1600 /* hold time; the pulse itself runs 2 s */
+
+/* Sends one LED command and reads its 2-byte status. 0 = accepted. */
+static int led_send(libusb_device_handle *handle, const unsigned char *pkt) {
+    unsigned char rsp[64];
+    int n = 0;
+    int r = bulk_transfer_with_pipe_retry(handle, VFS5011_OUT_ENDPOINT, (unsigned char *)pkt,
+                                           VFS5011_LED_PKT_LEN, &n, 1000);
+    if (r != 0 || n != VFS5011_LED_PKT_LEN) {
+        printf("  (LED: send failed: %s, %d of %d bytes)\n", libusb_error_name(r), n, VFS5011_LED_PKT_LEN);
+        return -1;
+    }
+    n = 0;
+    memset(rsp, 0, sizeof(rsp));
+    r = bulk_transfer_with_pipe_retry(handle, VFS5011_IN_ENDPOINT_CTRL, rsp, sizeof(rsp), &n, 1000);
+    if (r != 0 || n < 2 || rsp[0] != 0 || rsp[1] != 0) {
+        printf("  (LED: status read: %s, %d bytes, first bytes %02x %02x)\n", libusb_error_name(r), n, rsp[0], rsp[1]);
+        return -1;
+    }
+    return 0;
+}
+
+/* Starts the red pulse. Returns 1 when it was sent, 0 when skipped by the
+ * settings (red off, or brightness 0), -1 when the sensor did not accept it. */
+/* Reads the red pulse settings. Returns 1 when a pulse should be shown, 0 when
+ * the settings skip it (red off, or brightness 0). */
+static int led_red_params(int *port_out, int *bright_out) {
+    if (!vfs5011_led_load_red_enabled()) return 0;
+    int bright = vfs5011_led_load_brightness();
+    if (bright <= 0) return 0;
+    *port_out = vfs5011_led_load_red_port();
+    *bright_out = bright;
+    return 1;
+}
+
+/* Builds a stand-alone red pulse packet. Returns 1 when built, 0 when skipped
+ * by the settings, -1 on a bad port. */
+static int led_build_red(uint8_t pkt[VFS5011_LED_PKT_LEN], int *port_out, int *bright_out) {
+    int port = 0, bright = 0;
+    if (led_red_params(&port, &bright) != 1) return 0;
+    if (vfs5011_led_build(pkt, port, bright, 0, 500, 100, 2) != 0) return -1;
+    *port_out = port;
+    *bright_out = bright;
+    return 1;
+}
+
+static int led_show_red(libusb_device_handle *handle) {
+    uint8_t pkt[VFS5011_LED_PKT_LEN];
+    int port = 0, bright = 0;
+    int b = led_build_red(pkt, &port, &bright);
+    if (b != 1) return b;
+    if (led_send(handle, pkt) != 0) return -1;
+    printf("  (LED: red pulse sent, port %d, %d%%)\n", port, bright);
+    return 1;
+}
+
+/* Shows the red pulse while the sensor is armed and waiting for a finger (after
+ * the initiate-capture sequence), the state in which the LED tests lit it,
+ * then puts the idle blink back (restore_ready) or switches the LED off. The
+ * LED command is accepted but not visible during init, and is refused
+ * right after a finished capture, so this is the one place it works. */
+static void led_red_pulse_armed(libusb_device_handle *handle, bool restore_ready) {
+    if (led_show_red(handle) != 1) return;
+    /* Mid-episode (restore_ready): do not wait here. The command carries its own
+     * 2 s duration, the capture read starts at once so a swipe made during the
+     * pulse is not missed, and the next capture's init sequence puts the idle
+     * blink back anyway. Only the lockout path (no further capture) waits, then
+     * switches the LED off. */
+    if (restore_ready) return;
+    usleep(LED_RED_PULSE_MS * 1000);
+    uint8_t pkt[VFS5011_LED_PKT_LEN];
+    vfs5011_led_build_off(pkt);
+    led_send(handle, pkt);
+}
+
 static int run_sequence(libusb_device_handle *handle, struct usb_action *seq, int count) {
     unsigned char recv_buf[VFS5011_RECEIVE_BUF_SIZE];
     int r, transferred, i;
     for (i = 0; i < count; i++) {
         struct usb_action *a = &seq[i];
         if (a->type == ACTION_SEND) {
-            r = bulk_transfer_with_pipe_retry(handle, a->endpoint, a->data, a->size,
+            uint8_t led_scratch[VFS5011_LED_PKT_LEN];
+            const unsigned char *send_data = vfs5011_led_prepare_send(a->data, a->size, led_scratch);
+            /* A queued red pulse takes the place of the ready light at the step where
+             * the driver sets the waiting light (prepare_03). Red runs alone, because a
+             * second port in the same command dims the idle light afterwards; the
+             * capture loop puts the idle light back once the pulse is over. */
+            uint8_t red_pkt[VFS5011_LED_PKT_LEN];
+            int red_port = 0, red_bright = 0;
+            if (a->data == vfs5011_prepare_03 && atomic_load(&g_led_red_pending) &&
+                led_build_red(red_pkt, &red_port, &red_bright) == 1) {
+                atomic_store(&g_led_red_pending, false);
+                send_data = red_pkt;
+                atomic_store(&g_led_restore_idle, true);
+                printf("  (LED: red replaces the ready light, port %d, %d%%)\n", red_port, red_bright);
+            }
+            r = bulk_transfer_with_pipe_retry(handle, a->endpoint, (unsigned char *)send_data, a->size,
                                                &transferred, VFS5011_DEFAULT_WAIT_TIMEOUT);
             if (r != 0 || transferred != a->size) {
                 fprintf(stderr, "SEND failed at step %d (%s): %s\n", i + 1, a->name, libusb_error_name(r));
@@ -338,17 +456,23 @@ static atomic_bool g_capture_init_failed = false;
 
 static unsigned char *capture_fingerprint_image(libusb_device_handle *handle, int *out_height) {
     atomic_store(&g_capture_init_failed, false);
+    atomic_store(&g_led_restore_idle, false);
+    tmark("init start");
     if (run_sequence(handle, vfs5011_initialization,
                       sizeof(vfs5011_initialization)/sizeof(vfs5011_initialization[0])) != 0) {
         fprintf(stderr, "Init sequence failed\n");
         atomic_store(&g_capture_init_failed, true);
         return NULL;
     }
+    tmark("init done");
     if (run_sequence(handle, vfs5011_initiate_capture,
                       sizeof(vfs5011_initiate_capture)/sizeof(vfs5011_initiate_capture[0])) != 0) {
         fprintf(stderr, "Initiate-capture sequence failed\n");
         return NULL;
     }
+    tmark("armed");
+    long long armed_ms = led_now_ms();
+    atomic_store(&g_led_red_pending, false); /* a red pulse not used by the sequence above is dropped */
     printf("Swipe your finger across the sensor now...\n");
 
     unsigned char *recorded = malloc((size_t)MAX_LINES_TOTAL * VFS5011_LINE_SIZE);
@@ -363,6 +487,14 @@ static unsigned char *capture_fingerprint_image(libusb_device_handle *handle, in
     int finished = 0, r;
 
     while (!finished) {
+        /* Red is over and no finger yet: bring the idle light back (once). */
+        if (lines_captured == 0 && atomic_load(&g_led_restore_idle) &&
+            led_now_ms() - armed_ms >= LED_RED_PULSE_MS) {
+            atomic_store(&g_led_restore_idle, false);
+            uint8_t idle_pkt[VFS5011_LED_PKT_LEN];
+            const unsigned char *ip = vfs5011_led_prepare_send(vfs5011_prepare_03, sizeof(vfs5011_prepare_03), idle_pkt);
+            if (led_send(handle, ip) == 0) printf("  (LED: idle light restored)\n");
+        }
         if (atomic_load(&g_capture_abort) && lines_captured == 0) {
             free(chunk_buf);
             free(acc_buf);
@@ -389,6 +521,7 @@ static unsigned char *capture_fingerprint_image(libusb_device_handle *handle, in
             } else empty_lines = 0;
             if (empty_lines >= STOP_CHECK_LINES) { finished = 1; break; }
             lines_captured++;
+            if (lines_captured == 1) tmark("finger seen");
             if (lines_captured > MAX_LINES_READ) { finished = 1; break; }
             if (lastline == NULL || get_diff_norm(lastline + 8, line + 8, VFS5011_IMAGE_WIDTH) >= DIFFERENCE_THRESHOLD) {
                 if (lines_recorded >= MAX_LINES_TOTAL) { finished = 1; break; }
@@ -403,6 +536,7 @@ static unsigned char *capture_fingerprint_image(libusb_device_handle *handle, in
     }
     free(chunk_buf);
     free(acc_buf);
+    tmark("swipe done");
 
     if (lines_recorded < 2) {
         fprintf(stderr, "Not enough lines captured (%d) — try a slower, fuller swipe.\n", lines_recorded);
@@ -492,6 +626,35 @@ static void close_device(void) {
         libusb_close(g_handle);
     }
     if (g_ctx) libusb_exit(g_ctx);
+}
+
+/* Red pulse after a swipe that did not match.
+ *
+ * Right after a capture the sensor answers the LED command with status 01 04
+ * (hardware test on the DV6), so the pulse is queued and shown by the next
+ * scan once the sensor is armed and waiting, a moment after the failure sound. */
+static void led_queue_red(void) {
+    if (!vfs5011_led_load_red_enabled() || vfs5011_led_load_brightness() <= 0) return;
+    atomic_store(&g_led_red_pending, true);
+}
+
+/* Used when no further scan will follow (out of attempts): brings the sensor
+ * up the same way a scan does, shows the queued red pulse, then turns the LED
+ * off so the sensor is not left blinking "ready" while scanning is stopped.
+ * Best effort, never fatal. */
+static void led_show_queued_red_now(void) {
+    if (!atomic_exchange(&g_led_red_pending, false)) return;
+    if (open_device() == 0) {
+        if (run_sequence(g_handle, vfs5011_initialization,
+                         sizeof(vfs5011_initialization)/sizeof(vfs5011_initialization[0])) == 0 &&
+            run_sequence(g_handle, vfs5011_initiate_capture,
+                         sizeof(vfs5011_initiate_capture)/sizeof(vfs5011_initiate_capture[0])) == 0) {
+            led_red_pulse_armed(g_handle, false);
+        }
+    } else {
+        printf("  (LED: could not reopen the sensor for the red pulse)\n");
+    }
+    close_device();
 }
 
 /* Cheap, non-invasive check for whether a VFS5011 is physically present
@@ -621,12 +784,14 @@ static void play_success_sound(void) {
 static int capture_quality_template(struct xyt_struct *out_tmpl) {
     for (int attempt = 1; attempt <= MAX_SWIPE_RETRIES; attempt++) {
         if (atomic_load(&g_capture_abort)) return -1; /* yield requested between attempts */
+        tmark("open start");
         if (open_device() != 0) {
             close_device();
             fprintf(stderr, "Could not open device (attempt %d/%d)\n", attempt, MAX_SWIPE_RETRIES);
             usleep(500000);
             continue;
         }
+        tmark("opened");
 
         int height = 0;
         unsigned char *image = capture_fingerprint_image(g_handle, &height);
@@ -644,6 +809,7 @@ static int capture_quality_template(struct xyt_struct *out_tmpl) {
         int r = vfs5011_extract_template(image, VFS5011_IMAGE_WIDTH, height, out_tmpl);
         free(image);
         close_device();
+        tmark("template built");
 
         if (r != 0) {
             fprintf(stderr, "Minutiae extraction failed (attempt %d/%d)\n", attempt, MAX_SWIPE_RETRIES);
@@ -1077,6 +1243,7 @@ static void lockswipe_disarm(void) {
  * through here instead, so an episode ending falls back to the armed
  * state when swipe-to-lock is on. */
 static void settle_to_idle(void) {
+    atomic_store(&g_led_red_pending, false); /* a queued red pulse belongs to the episode that just ended */
     atomic_store(&g_state, STATE_IDLE);
     lockswipe_try_arm();
 }
@@ -1929,12 +2096,14 @@ static void *polling_thread_main(void *arg) {
          * episode ends underneath us -- screen unlocked, or the loader
          * itself failed and on_screen_unlocked/load_templates_thread_main
          * already put us back in STATE_IDLE. */
+        tmark("waiting for templates");
         while (!atomic_load(&g_templates_ready) && atomic_load(&g_state) == STATE_POLLING) {
             usleep(50000);
         }
         if (atomic_load(&g_state) != STATE_POLLING) {
             continue;
         }
+        tmark("templates ready");
 
         /* Snapshot everything the loader thread wrote under its lock --
          * cheap (a handful of small structs + one short string), and
@@ -2000,6 +2169,7 @@ static void *polling_thread_main(void *arg) {
                 }
             }
 
+            tmark("match, about to type");
             if (ok_to_type) play_success_sound();
 
             if (ok_to_type && source == TRIGGER_PADLOCK && g_trigger_secure_field) {
@@ -2038,6 +2208,7 @@ static void *polling_thread_main(void *arg) {
              * well enough -- give an audible reject cue and let the
              * loop immediately try the next swipe. */
             play_failure_sound();
+            led_queue_red();
 
             int fails = atomic_fetch_add(&g_failed_swipes, 1) + 1;
             if (fails >= MAX_FAILED_SWIPES) {
@@ -2051,6 +2222,7 @@ static void *polling_thread_main(void *arg) {
                 if (g_trigger_secure_field) { CFRelease(g_trigger_secure_field); g_trigger_secure_field = NULL; }
                 atomic_store(&g_trigger_source, TRIGGER_NONE);
                 atomic_store(&g_failed_swipes, 0);
+                led_show_queued_red_now();
                 settle_to_idle();
                 vfs5011_notify_swipe_lockout();
             } else {
