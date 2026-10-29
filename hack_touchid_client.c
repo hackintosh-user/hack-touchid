@@ -1424,6 +1424,49 @@ static int read_hidden_line(char *buf, size_t buf_size) {
     return 0;
 }
 
+/* Login password status for the status screen. The templates volume is
+ * unmounted at rest, so this is not a live check: it is refreshed whenever
+ * the volume is mounted anyway (Deploy, Enroll, Verify, Settings) and the last
+ * known answer is kept in a small marker file (a plain 1 or 0, no secret) so
+ * the status line still says something right after the client starts.
+ * -1 = unknown. g_password_verified is 1 once this session has seen the volume. */
+#define PASSWORD_STATE_FILE "/usr/local/libexec/hack-touchid/password.state"
+static int g_password_state = -1;
+static int g_password_verified = 0;
+static int g_password_state_loaded = 0;
+static int g_password_state_written = -1;
+
+/* A password file counts as stored only when it is not empty. */
+static int password_file_stored(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && st.st_size > 0;
+}
+
+static void password_state_set(int stored) {
+    g_password_state = stored ? 1 : 0;
+    g_password_verified = 1;
+    g_password_state_loaded = 1;
+    if (g_password_state_written == g_password_state) return;
+    FILE *f = fopen(PASSWORD_STATE_FILE, "w");
+    if (f) {
+        fputs(g_password_state ? "1\n" : "0\n", f);
+        fclose(f);
+        chmod(PASSWORD_STATE_FILE, 0644);
+        g_password_state_written = g_password_state;
+    }
+}
+
+static void password_state_load(void) {
+    if (g_password_state_loaded) return;
+    g_password_state_loaded = 1;
+    FILE *f = fopen(PASSWORD_STATE_FILE, "r");
+    if (!f) return;
+    int c = fgetc(f);
+    fclose(f);
+    if (c == '1') { g_password_state = 1; g_password_state_written = 1; }
+    else if (c == '0') { g_password_state = 0; g_password_state_written = 0; }
+}
+
 /* Prompts for and stores the password the daemon auto-types on a
  * fingerprint match, directly onto the already-mounted HackTouchIDStore
  * volume at mount_path — same file, same permissions (root:wheel,
@@ -1439,7 +1482,8 @@ static int prompt_and_store_password(const char *mount_path, int only_if_missing
     char password_path[PATH_MAX];
     snprintf(password_path, sizeof(password_path), "%s/%s", mount_path, PASSWORD_FILENAME);
 
-    if (only_if_missing && access(password_path, F_OK) == 0) {
+    if (only_if_missing && password_file_stored(password_path)) {
+        password_state_set(1);
         return 0; /* already set — nothing to do */
     }
 
@@ -1481,6 +1525,7 @@ static int prompt_and_store_password(const char *mount_path, int only_if_missing
 
     memset(password, 0, sizeof(password));
     memset(confirm, 0, sizeof(confirm));
+    password_state_set(1);
     printf("Password stored.\n\n");
     return 0;
 }
@@ -1697,6 +1742,12 @@ static int mount_template_volume(char *out_path, size_t out_path_size) {
     }
     strncpy(out_path, last_line, out_path_size - 1);
     out_path[out_path_size - 1] = '\0';
+    {
+        /* The volume is open right now, so refresh the status line's answer. */
+        char pw_path[PATH_MAX];
+        snprintf(pw_path, sizeof(pw_path), "%s/%s", out_path, PASSWORD_FILENAME);
+        password_state_set(password_file_stored(pw_path));
+    }
     return 0;
 }
 
@@ -1997,6 +2048,19 @@ static void print_menu(void) {
     printf("  * Accessibility Grant  : %s%s%s\n",
            accessibility_ready ? VFSC_GREEN : VFSC_YELLOW,
            accessibility_ready ? "Granted" : "Not Detected", VFSC_RESET);
+    /* Not a live check either, same reasoning as Fingers below. */
+    password_state_load();
+    if (g_password_state < 0) {
+        printf("  * Login Password       : %sUnknown (run Deploy/Verify to check)%s\n", VFSC_DIM, VFSC_RESET);
+    } else if (g_password_state == 0) {
+        printf("  * Login Password       : %sNot stored%s%s (Settings [3] to add)%s\n",
+               VFSC_YELLOW, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+    } else if (g_password_verified) {
+        printf("  * Login Password       : %sStored%s\n", VFSC_GREEN, VFSC_RESET);
+    } else {
+        printf("  * Login Password       : %sStored%s%s (last check)%s\n",
+               VFSC_GREEN, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+    }
     /* Not a live check — see g_finger_count comment above. The
      * templates volume is unmounted at rest; run Enroll, Verify, or
      * Manage once this session to populate this. */
@@ -4596,6 +4660,7 @@ static void do_settings_clear_password_cache(void) {
     if (remove(password_path) != 0) {
         vfsc_err("Failed to clear password cache: %s\n\n", strerror(errno));
     } else {
+        password_state_set(0);
         printf("Password cache cleared.\n\n");
     }
     unmount_template_volume();
@@ -5925,10 +5990,18 @@ static bool do_deploy(void) {
     if (mount_template_volume(mount_path, sizeof(mount_path)) == 0) {
         char password_path[PATH_MAX];
         snprintf(password_path, sizeof(password_path), "%s/%s", mount_path, PASSWORD_FILENAME);
-        if (access(password_path, F_OK) != 0) {
-            prompt_and_store_password(mount_path, /*only_if_missing=*/1);
+        if (!password_file_stored(password_path)) {
+            if (prompt_and_store_password(mount_path, /*only_if_missing=*/1) != 0) {
+                vfsc_warn("No login password is stored yet, so a fingerprint match will not type anything.\n"
+                          "Add it with Settings [3] Set/Update Auto-Type Password.\n\n");
+            }
+        } else {
+            vfsc_ok("Login password: Stored.\n\n");
         }
         unmount_template_volume();
+    } else {
+        vfsc_warn("Could not check whether a login password is stored (template volume unavailable).\n"
+                  "Check it with Settings [3] Set/Update Auto-Type Password.\n\n");
     }
 
     /* Menu bar app: part of Deploy now. Non-fatal, a failure here never fails Deploy. */
