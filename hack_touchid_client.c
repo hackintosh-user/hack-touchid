@@ -57,6 +57,7 @@
 #include <mach-o/dyld.h>
 
 #include "vfs5011_proto.h"
+#include "vfs5011_led.h"
 #include "hack-touchid-matcher.h"
 #include "supported_sensors.h"
 #ifdef HT_NO_METALLICA
@@ -237,7 +238,9 @@ static int run_sequence(libusb_device_handle *handle, struct usb_action *seq, in
     for (i = 0; i < count; i++) {
         struct usb_action *a = &seq[i];
         if (a->type == ACTION_SEND) {
-            r = bulk_transfer_with_pipe_retry(handle, a->endpoint, a->data, a->size,
+            uint8_t led_scratch[VFS5011_LED_PKT_LEN]; /* saved LED brightness, see vfs5011_led.h */
+            const unsigned char *send_data = vfs5011_led_prepare_send(a->data, a->size, led_scratch);
+            r = bulk_transfer_with_pipe_retry(handle, a->endpoint, (unsigned char *)send_data, a->size,
                                                &transferred, VFS5011_DEFAULT_WAIT_TIMEOUT);
             if (r != 0 || transferred != a->size) {
                 if (!g_capture_quiet) fprintf(stderr, "SEND failed at step %d (%s): %s\n", i + 1, a->name, libusb_error_name(r));
