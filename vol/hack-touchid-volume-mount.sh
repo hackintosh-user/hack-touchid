@@ -118,6 +118,30 @@ PASSPHRASE=$(security find-generic-password \
     -w \
     /Library/Keychains/System.keychain 2>/dev/null || true)
 
+# Unlocks and mounts $1 at $MOUNT_POINT with the stored passphrase. Also copes
+# with a volume that is already unlocked but not mounted (an interrupted episode
+# leaves it that way): diskutil then answers "not locked" (-69589) and the
+# passphrase was never the problem, so it is mounted directly instead of falling
+# through to the interactive adopt prompt, which cannot work without a terminal.
+# Returns 0 on success.
+unlock_and_mount() {
+    local diskid="$1" out
+    if out=$(echo "$PASSPHRASE" | diskutil apfs unlockVolume "$diskid" -mountpoint "$MOUNT_POINT" -stdinpassphrase 2>&1); then
+        [ -n "$out" ] && echo "$out" >&2
+        return 0
+    fi
+    [ -n "$out" ] && echo "$out" >&2
+    case "$out" in
+        *-69589*|*"not locked"*)
+            echo "$diskid is already unlocked but not mounted -- mounting it directly." >&2
+            if diskutil mount -mountPoint "$MOUNT_POINT" "$diskid" >&2; then
+                return 0
+            fi
+            ;;
+    esac
+    return 1
+}
+
 adopt_one() {
     # Interactively adopts the single disk identifier passed in: first
     # offers to pull the passphrase straight out of ANOTHER macOS
@@ -301,7 +325,7 @@ if [ "${#CANDIDATES[@]}" -eq 1 ]; then
         exit 1
     fi
 
-    if echo "$PASSPHRASE" | diskutil apfs unlockVolume "$DISKID" -mountpoint "$MOUNT_POINT" -stdinpassphrase; then
+    if unlock_and_mount "$DISKID"; then
         finish_mount "$MOUNT_POINT"
         exit 0
     fi
@@ -329,7 +353,7 @@ for diskid in "${CANDIDATES[@]}"; do
     if [ -z "$mpath" ]; then
         # Not mounted -- only worth unlocking it to inspect if we
         # actually have a passphrase to try.
-        if [ -n "$PASSPHRASE" ] && echo "$PASSPHRASE" | diskutil apfs unlockVolume "$diskid" -mountpoint "$MOUNT_POINT" -stdinpassphrase >/dev/null 2>&1; then
+        if [ -n "$PASSPHRASE" ] && unlock_and_mount "$diskid" >/dev/null 2>&1; then
             mpath="$MOUNT_POINT"
             opened_here=1
         else
