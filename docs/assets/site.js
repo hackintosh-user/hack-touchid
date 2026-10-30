@@ -40,3 +40,19 @@ async function loadCommits(el){
 }
 document.querySelectorAll("[data-changelog]").forEach(loadChangelog);
 document.querySelectorAll("[data-commits]").forEach(loadCommits);
+(function(){
+  const w=document.querySelector("nav .wrap");if(!w)return;
+  const links=[...w.querySelectorAll("a:not(.brand)")];if(!links.length)return;
+  const btn=document.createElement("button");btn.className="navbtn";btn.type="button";
+  btn.setAttribute("aria-label","Menu");btn.setAttribute("aria-expanded","false");
+  btn.innerHTML="<span></span><span></span><span></span>";
+  const ov=document.createElement("div");ov.className="navov";
+  const dr=document.createElement("aside");dr.className="navdr";
+  links.forEach(a=>dr.appendChild(a.cloneNode(true)));
+  const set=o=>{dr.classList.toggle("open",o);ov.classList.toggle("open",o);btn.setAttribute("aria-expanded",o)};
+  btn.addEventListener("click",()=>set(!dr.classList.contains("open")));
+  ov.addEventListener("click",()=>set(false));
+  dr.addEventListener("click",e=>{if(e.target.closest("a"))set(false)});
+  document.addEventListener("keydown",e=>{if(e.key==="Escape")set(false)});
+  w.parentElement.classList.add("js");w.prepend(btn);document.body.append(ov,dr);
+})();
