@@ -73,3 +73,16 @@ nav.js{display:none}
 :root[data-theme=light]{--bg:#fff;--fg:#1f2328;--muted:#59636e;--card:#f6f8fa;--line:#d1d9e0;--accent:#0969da;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e}
 .themebtn{margin-top:auto;align-self:flex-start;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:8px;background:var(--card);cursor:pointer;padding:0}
 .themebtn:hover .ni{color:var(--fg)}
+
+.fp-hero{width:.85em;height:.85em;margin-right:.3em;vertical-align:-.08em;animation:fpcycle 10s linear infinite}
+@keyframes fpcycle{
+0%,100%{background-color:var(--fg)}
+12%{background-color:#4da3ff}
+24%{background-color:#ff453a}
+36%{background-color:#ff9f0a}
+48%{background-color:#ffd60a}
+60%{background-color:#30d158}
+72%{background-color:#40c8e0}
+84%{background-color:#bf5af2}
+}
+@media (prefers-reduced-motion:reduce){.fp-hero{animation:none;background-color:var(--accent)}}
