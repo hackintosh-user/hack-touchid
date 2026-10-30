@@ -1,3 +1,4 @@
+(function(){try{const t=localStorage.getItem("htid-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}})();
 const REPO="hackintosh-user/hack-touchid", CL_BRANCH="main";
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function inline(t){return esc(t).replace(/`([^`]+)`/g,"<code>$1</code>").replace(/\*\*([^*]+)\*\*/g,"<b>$1</b>").replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');}
@@ -64,6 +65,16 @@ document.querySelectorAll("[data-commits]").forEach(loadCommits);
     if(svg)c.insertAdjacentHTML("afterbegin",'<svg class="ni'+(key?'':' fill')+'" viewBox="0 0 24 24" aria-hidden="true">'+svg+'</svg>');
     dr.appendChild(c);
   });
+  const MOON='<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
+  const SUN='<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+  const root=document.documentElement,mq=window.matchMedia("(prefers-color-scheme: light)");
+  const cur=()=>root.dataset.theme||(mq.matches?"light":"dark");
+  const tb=document.createElement("button");tb.className="themebtn";tb.type="button";
+  const paint=()=>{const d=cur()==="dark";tb.innerHTML='<svg class="ni" viewBox="0 0 24 24" aria-hidden="true">'+(d?SUN:MOON)+'</svg>';
+    const l=d?"Switch to light mode":"Switch to dark mode";tb.setAttribute("aria-label",l);tb.title=l};
+  tb.addEventListener("click",()=>{const n=cur()==="dark"?"light":"dark";root.dataset.theme=n;
+    try{localStorage.setItem("htid-theme",n)}catch(e){}paint()});
+  paint();dr.appendChild(tb);
   const set=o=>{dr.classList.toggle("open",o);ov.classList.toggle("open",o);btn.setAttribute("aria-expanded",o)};
   btn.addEventListener("click",()=>set(!dr.classList.contains("open")));
   ov.addEventListener("click",()=>set(false));

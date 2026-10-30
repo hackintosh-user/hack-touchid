@@ -69,3 +69,7 @@ nav.js{display:none}
 .ni{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;color:var(--muted)}
 .ni.fill{fill:currentColor;stroke:none}
 .navdr a:hover .ni,.navdr a.on .ni{color:var(--fg)}
+:root[data-theme=dark]{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--card:#161b22;--line:#30363d;--accent:#58a6ff;--ok:#3fb950;--warn:#d29922;--bad:#f85149}
+:root[data-theme=light]{--bg:#fff;--fg:#1f2328;--muted:#59636e;--card:#f6f8fa;--line:#d1d9e0;--accent:#0969da;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e}
+.themebtn{margin-top:auto;align-self:flex-start;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:8px;background:var(--card);cursor:pointer;padding:0}
+.themebtn:hover .ni{color:var(--fg)}
