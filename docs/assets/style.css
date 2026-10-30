@@ -44,3 +44,14 @@ pre code{background:none;padding:0}
 footer{border-top:1px solid var(--line);padding:26px 0;color:var(--muted);font-size:.9rem;text-align:center;margin-top:30px}
 .fp{display:inline-block;width:24px;height:24px;margin-right:8px;vertical-align:-5px;background:currentColor;-webkit-mask:url(fingerprint.png) center/contain no-repeat;mask:url(fingerprint.png) center/contain no-repeat}
 nav .brand{display:flex;align-items:center}
+nav.js .wrap>a:not(.brand){display:none}
+.navbtn{background:none;border:0;padding:8px;margin-left:-8px;cursor:pointer;display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.navbtn span{display:block;height:2px;width:22px;border-radius:2px;background:var(--fg)}
+.navbtn span:last-child{width:14px}
+.navov{position:fixed;inset:0;background:rgba(0,0,0,.45);opacity:0;pointer-events:none;transition:opacity .2s;z-index:15}
+.navov.open{opacity:1;pointer-events:auto}
+.navdr{position:fixed;top:0;left:0;bottom:0;width:260px;max-width:80vw;background:var(--bg);border-right:1px solid var(--line);transform:translateX(-100%);transition:transform .2s;z-index:20;padding:70px 20px 20px;display:flex;flex-direction:column;gap:6px;visibility:hidden}
+.navdr.open{transform:none;visibility:visible}
+.navdr a{padding:10px 12px;border-radius:8px;color:var(--fg)}
+.navdr a:hover{background:var(--card);text-decoration:none}
+.navdr a.on{font-weight:600;background:var(--card)}
