@@ -5486,6 +5486,112 @@ static void print_settings_group(const char *title) {
     printf("%s--------------------------------%s\n", VFSC_DIM, VFSC_RESET);
 }
 
+/* ------------------------------------------------------------------ *
+ * Settings [LED]: VFS5011 sensor light
+ *
+ * Writes the same conf files the daemon reads (see vfs5011_led.h), so a change
+ * applies on the next swipe with no daemon restart. Defaults are restored by
+ * deleting the files.
+ * ------------------------------------------------------------------ */
+static bool is_vfs5011_sensor(void) {
+    return g_detected_sensor && g_detected_sensor->family &&
+           strcmp(g_detected_sensor->family, "vfs5011") == 0;
+}
+
+static bool led_conf_write(const char *path, int value) {
+    system("mkdir -p /usr/local/libexec/hack-touchid");
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        vfsc_err("Failed to write %s: %s\n\n", path, strerror(errno));
+        return false;
+    }
+    fprintf(f, "%d\n", value);
+    fclose(f);
+    chmod(path, 0644);
+    return true;
+}
+
+/* Prompts for an integer in [lo, hi]. Returns the value, or -1 when cancelled. */
+static int led_prompt_int(const char *what, int lo, int hi) {
+    printf("%s (%d-%d), or press Enter to cancel: ", what, lo, hi);
+    fflush(stdout);
+    char line[32];
+    if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return -1; }
+    char *end = NULL;
+    long v = strtol(line, &end, 10);
+    if (end == line || v < lo || v > hi) {
+        printf("Cancelled.\n\n");
+        return -1;
+    }
+    return (int)v;
+}
+
+static void do_settings_led(void) {
+    char line[32];
+    for (;;) {
+        int bright = vfs5011_led_load_brightness();
+        int red = vfs5011_led_load_red_enabled();
+        int port = vfs5011_led_load_red_port();
+        int steady = vfs5011_led_load_idle_steady();
+
+        printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+        printf("%s                           SENSOR LED SETTINGS%s\n", VFSC_BCYAN, VFSC_RESET);
+        printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+        printf("%s[1]%s Brightness (current: %d%%)\n", VFSC_BOLD, VFSC_RESET, bright);
+        printf("%s[2]%s Red light on a wrong finger (current: %s)\n", VFSC_BOLD, VFSC_RESET, red ? "ON" : "OFF");
+        printf("%s[3]%s Red LED port (current: %d, default %d)\n", VFSC_BOLD, VFSC_RESET, port, VFS5011_LED_PORT_ATTENTION);
+        printf("%s[4]%s Steady ready light (current: %s, OFF is the driver blink)\n", VFSC_BOLD, VFSC_RESET, steady ? "ON" : "OFF");
+        printf("%s[R]%s Reset all to defaults\n", VFSC_BOLD, VFSC_RESET);
+        printf("%s[B]%s Back\n", VFSC_BOLD, VFSC_RESET);
+        printf("%s%s%s\n\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+        printf("%s<LED Settings>%s ", VFSC_BOLD, VFSC_RESET);
+        fflush(stdout);
+
+        if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return; }
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' || line[len-1] == ' ')) line[--len] = '\0';
+        if (len == 0) continue;
+        printf("\n");
+
+        switch (line[0]) {
+            case '1': {
+                printf("0 turns the sensor light off. Red is skipped too when brightness is 0.\n");
+                int v = led_prompt_int("Brightness", 0, 100);
+                if (v >= 0 && led_conf_write(VFS5011_LED_BRIGHTNESS_CONF, v))
+                    vfsc_ok("Brightness set to %d%%. Applies on the next swipe.\n\n", v);
+                break;
+            }
+            case '2':
+                if (led_conf_write(VFS5011_LED_RED_CONF, red ? 0 : 1))
+                    vfsc_ok("Red light on a wrong finger is now %s. Applies on the next swipe.\n\n", red ? "OFF" : "ON");
+                break;
+            case '3': {
+                printf("Port 2 is the red LED on the HP DV6. Change it only if your laptop shows\n");
+                printf("another color there.\n");
+                int v = led_prompt_int("Red LED port", 0, 3);
+                if (v >= 0 && led_conf_write(VFS5011_LED_RED_PORT_CONF, v))
+                    vfsc_ok("Red LED port set to %d. Applies on the next swipe.\n\n", v);
+                break;
+            }
+            case '4':
+                if (led_conf_write(VFS5011_LED_IDLE_STEADY_CONF, steady ? 0 : 1))
+                    vfsc_ok("Steady ready light is now %s. Applies on the next swipe.\n\n", steady ? "OFF" : "ON");
+                break;
+            case 'R': case 'r':
+                unlink(VFS5011_LED_BRIGHTNESS_CONF);
+                unlink(VFS5011_LED_RED_CONF);
+                unlink(VFS5011_LED_RED_PORT_CONF);
+                unlink(VFS5011_LED_IDLE_STEADY_CONF);
+                vfsc_ok("LED settings reset to defaults. Applies on the next swipe.\n\n");
+                break;
+            case 'B': case 'b':
+                return;
+            default:
+                vfsc_err("Unrecognized option '%s'. Choose 1-4, R or B.\n\n", line);
+        }
+    }
+}
+
 /* The options are grouped by purpose. The keys did not change, only the
  * order and the headings, so the dispatch in do_settings_menu() is the
  * same. */
@@ -5515,6 +5621,13 @@ static void print_settings_menu(void) {
     print_settings_group("SWIPE TO LOCK");
     printf("%s[L]%s Swipe to Lock Sensitivity (current: %d rows)\n", VFSC_BOLD, VFSC_RESET, read_lockswipe_min_height());
     printf("\n");
+
+    if (is_vfs5011_sensor()) {
+        print_settings_group("SENSOR LED");
+        printf("%s[LED]%s Sensor LED Settings (brightness: %d%%, red on wrong finger: %s)\n", VFSC_BOLD, VFSC_RESET,
+               vfs5011_led_load_brightness(), vfs5011_led_load_red_enabled() ? "ON" : "OFF");
+        printf("\n");
+    }
 
     print_settings_group("UPDATES & NOTIFICATIONS");
     printf("%s[7]%s Toggle Beta Updates (current: %s)\n", VFSC_BOLD, VFSC_RESET,
@@ -5562,6 +5675,12 @@ static void do_settings_menu(void) {
             do_settings_recent_commits();
             continue;
         }
+        if ((line[0] == 'L' || line[0] == 'l') && (line[1] == 'E' || line[1] == 'e') &&
+            (line[2] == 'D' || line[2] == 'd') && line[3] == '\0') {
+            if (is_vfs5011_sensor()) do_settings_led();
+            else vfsc_err("Sensor LED settings only apply to a VFS5011 sensor.\n\n");
+            continue;
+        }
         switch (cmd) {
             case '1': do_settings_delete_fingers(); break;
             case '2': do_settings_clear_password_cache(); break;
@@ -5576,7 +5695,7 @@ static void do_settings_menu(void) {
             case 'L': case 'l': do_settings_lockswipe_sensitivity(); break;
             case 'B': case 'b': return;
             default:
-                vfsc_err("Unrecognized option '%s'. Choose 1-9, L, U, CU, CM or B.\n\n", line);
+                vfsc_err("Unrecognized option '%s'. Choose 1-9, L, U, CU, CM, LED or B.\n\n", line);
         }
     }
 }
