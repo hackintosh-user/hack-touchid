@@ -17,12 +17,10 @@
  *     (metallica_mis_agent_open / _identify / _close)
  *   - there is no swipe image, so Swipe to Lock becomes "Touch to Lock": while the
  *     screen is unlocked and the setting is on, a touch from an enrolled finger locks
- *     the screen (Control-Command-Q). Beta: offered from macOS Sequoia for testing,
- *     switch LOCKTOUCH_MIN_DARWIN to 25 to make it Tahoe only.
+ *     the screen (Control-Command-Q). Confirmed working on the X1C6 (06cb:009a).
+ *     Offered on macOS Tahoe (Darwin 25) and newer only.
  *
- * UNTESTED ON REAL HARDWARE. Ported from the VFS5011 daemon and checked by
- * reading and static analysis only. Ships behind the Deploy gate in the
- * client until a tester has confirmed it.
+ * Ported from the VFS5011 daemon.
  *
  * Build: scripts/build_metallica_agent.sh (writes ./metallica_mis_agent).
  * Installed by metallica/metallica_mis_agent_install.sh, run from Deploy [3].
@@ -450,12 +448,12 @@ static bool screen_is_locked_now(void) {
 }
 
 /* ------------------------------------------------------------------ *
- * Touch to Lock (beta)
+ * Touch to Lock
  * ------------------------------------------------------------------ *
  * While the screen is unlocked and the setting is on, the agent keeps a sensor session open and
  * asks the sensor to match every touch. A match locks the screen with Control-Command-Q, the same
  * keystroke the VFS5011 daemon uses. A touch that does not match does nothing. */
-#define LOCKTOUCH_MIN_DARWIN 24 /* 24 = Sequoia (testing). Set to 25 for Tahoe only once it is confirmed. */
+#define LOCKTOUCH_MIN_DARWIN 25 /* 25 = Tahoe */
 #define TOUCHLOCK_MARKER "/Library/Application Support/VFS5011/touch_lock_available"
 
 static bool os_allows_touch_lock(void) {
