@@ -41,7 +41,7 @@
 #define HT_DEP_ALL (HT_DEP_LIBUSB | HT_DEP_OPENSSL | HT_DEP_INNOEXTRACT)
 
 typedef struct {
-    const char *family;            /* build family: "vfs5011", "upek" or "metallica" */
+    const char *family;            /* build family: "vfs5011", "upek", "metallica" or "synaptics" */
     unsigned deps_build;           /* HT_DEP_* bits needed to compile and link this family */
     unsigned deps_runtime;         /* HT_DEP_* bits needed while the client/daemon runs */
     const char *display_name;      /* shown in the client, e.g. "VFS5011" */
@@ -169,6 +169,28 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
         .pid                  = 0x009d,
         .daemon_binary_name   = "metallica_mis_agent",
         .install_script_name  = "metallica/metallica_mis_agent_install.sh",
+        .backend_available    = 0,
+    },
+    {
+        /* Synaptics Prometheus 06cb:00f0 ("Prometheus 0F"), reported in
+         * issue #4 by labrouss (HP EliteBook 840 G8). Match-in-sensor like
+         * Metallica MIS, but much simpler on the wire: no TLS, no pairing,
+         * no calibration, no firmware upload. Plain BMKT messages over
+         * bulk EP 0x01/0x81 plus an interrupt endpoint for async events,
+         * documented in PROTOCOL-06cb-00f0.md (observed on Linux, libfprint
+         * synaptics driver is the LGPL-2.1 reference). Branch
+         * promethus-00f0. Only synaptics/synaptics_bmkt.c exists so far (a
+         * standalone open test, see scripts/build_synaptics_test.sh), so
+         * backend_available stays 0 and Enroll/Verify/Deploy refuse for
+         * this sensor. install_script_name is a placeholder. */
+        .family              = "synaptics",
+        .deps_build          = HT_DEP_LIBUSB,
+        .deps_runtime        = HT_DEP_LIBUSB,
+        .display_name        = "Synaptics Prometheus 0F",
+        .vid                  = 0x06cb,
+        .pid                  = 0x00f0,
+        .daemon_binary_name   = "synaptics_agent",
+        .install_script_name  = "synaptics/synaptics_agent_install.sh",
         .backend_available    = 0,
     },
 };
