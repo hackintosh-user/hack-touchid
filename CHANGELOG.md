@@ -3,7 +3,8 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
-## v1.1.0 (No ETA yet | This is Pre-Release software) 
+## v1.1.0 - Current Development Target
+**CHANGES ARE YET TO BE MERGED INTO `MAIN`**
 
 - New sensor: UPEK/AuthenTec TouchStrip (`147e:2016`), experimental, capture test only for now.
 - New sensor: Synaptics Metallica MIS, experimental. A native port of python-validity (pairing, secure session, calibration, enroll and verify) now works on real hardware. `[1]` Enroll now enrolls this sensor straight from the menu: it asks before replacing prints already stored on the sensor, sets up a never-paired sensor by itself, and keeps diagnostics in `/var/log/htid-metallica-enroll.log`. If the sensor was paired on Windows or Linux, the client asks once for the laptop's real product name and serial (with hints on where to find them) and remembers them. The sensor light now comes back on before every touch. `--enroll-test`, `--verify-test`, `--list-records`, `--wipe-records`, `--host-product`, `--host-serial` and `--debug` remain for troubleshooting. Fully working on `06cb:009a` (confirmed on a ThinkPad X1C6): Enroll, Verify, lock screen and padlock unlock. `138a:0097` and `138a:009d` are detected but still in testing.
@@ -14,7 +15,7 @@ All notable changes to the Hackintosh-TouchID fingerprint authentication project
 - Menu bar app v1.4.0: client update notifications with an "Update Client" button, "Reinstall Daemon" health alerts, and 🔻 / ✅ / ❌ swipe notifications.
 - Swipe to Lock (macOS Tahoe only): one swipe locks the screen, with adjustable sensitivity (`[L]`).
 - Touch to Lock (macOS Tahoe only, Metallica MIS): a touch from an enrolled finger locks the screen. Confirmed on `06cb:009a`.
-- Restore Red Light on wrong finger for VFS5011: the sensor LED now flashes red on an unrecognized finger and the ready light comes back by itself. Brightness, red on/off and a steady idle light are set through conf files in `/usr/local/libexec/hack-touchid/` for now.
+- Restore Red Light on wrong finger for VFS5011: the sensor LED now flashes red on an unrecognized finger and the ready light comes back by itself. Brightness, red on/off, the red LED port and a steady ready light are set from Settings `[LED]` in the client.
 - Client: new `Login Password` line on the status screen (Stored, Not stored or Unknown). An empty `password.txt` now counts as not stored, and Deploy always reports the result.
 - Fixed the template volume staying unlocked but unmounted after a lock, which made the next swipes fail and the daemon go idle.
 - Lockout after 4 failed swipes, plus a "swipe was too weak" notification.
