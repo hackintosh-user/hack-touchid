@@ -996,11 +996,31 @@ int metallica_mis_send_init(void) {
         }
         break;
     }
-    if (n < 4) {
+    if (n < 2) {
         fprintf(stderr, "metallica_mis: get_fw_info() reply too short (%d bytes)\n", n);
         return -1;
     }
-    unsigned short fw_err = (unsigned short)reply[2] | ((unsigned short)reply[3] << 8);
+    unsigned short fw_stat = (unsigned short)reply[0] | ((unsigned short)reply[1] << 8);
+    unsigned short fw_err;
+    if (fw_stat == 0x0104) {
+        fprintf(stderr, "metallica_mis: get_fw_info() still busy (0x0104) after 20 tries\n");
+        return -1;
+    } else if (fw_stat != 0) {
+        /* Seen on a real Prometheus 0097 (ThinkPad X1C5, Oct 30): the whole
+         * reply is a bare 2-byte error status (af 04 = 0x04af), no err field
+         * after it. Treated as "firmware extension NOT loaded", the same
+         * clean-slate path as a non-zero err field below. A different
+         * Prometheus chip (python-validity issue #263) shows the same kind of
+         * short reply to this command. Not confirmed beyond that. */
+        fw_err = fw_stat;
+        fprintf(stderr, "metallica_mis: get_fw_info() status 0x%04x (%d bytes), "
+                         "treating as firmware extension not loaded\n", fw_stat, n);
+    } else if (n < 4) {
+        fprintf(stderr, "metallica_mis: get_fw_info() reply too short (%d bytes)\n", n);
+        return -1;
+    } else {
+        fw_err = (unsigned short)reply[2] | ((unsigned short)reply[3] << 8);
+    }
     mmis_dbg("send_init: get_fw_info err field = 0x%04x (%s)", fw_err, fw_err ? "firmware extension NOT loaded, clean-slate path" : "firmware extension already loaded");
 
     /* Step 4: always send the hardcoded init blob. */
