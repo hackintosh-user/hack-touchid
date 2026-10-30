@@ -54,7 +54,25 @@ Utilities
 <tr><td><code>--diag-pid</code></td><td>Run the [D] Diagnose steps without launching the client.</td></tr>
 <tr><td><code>--check-updates</code></td><td>Check for updates without launching the client. If there is one, it shows the [A] Show changelog / [Y] Download and install / [N] Cancel prompt.</td></tr>
 <tr><td><code>--menu-updater</code></td><td>Check for updates and install one right away, with no prompts. The menu bar app's Update Client button runs this in a terminal.</td></tr>
+<tr><td><code>-h</code> / <code>--help</code></td><td>Show the list of launch arguments and exit. No password needed. <code>[H]</code> in the menu shows the same list.</td></tr>
+<tr><td><code>-v</code> / <code>--version</code></td><td>Show the client version, build, branch and the installed daemon, FPOV and Fpbootd versions, then exit. No password needed.</td></tr>
 <tr><td><code>--debug</code></td><td>Print every log line for easier debugging.</td></tr>
+<tr><td><code>--debug-full</code></td><td>Same as <code>--debug</code>, but never truncates large payloads.</td></tr>
+<tr><td><code>--list-records</code></td><td>Read-only. List the storage, users and enrolled fingers stored on the sensor, plus database size and free space.</td></tr>
+<tr><td><code>--wipe-records</code></td><td>Delete all enrolled prints stored on the sensor. Destructive, cannot be undone.</td></tr>
+<tr><td><code>--enroll-test</code></td><td>Metallica MIS only. Calibrate, enroll one finger on the sensor and exit. Tester tool, run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--verify-test</code></td><td>Metallica MIS only. Calibrate, touch once, match against the print saved by <code>--enroll-test</code> and exit. Run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--force-pair</code></td><td>Experimental. Try to pair the sensor by writing its identity partitions. A sensor that is already paired refuses this (error <code>0x0404</code>), so use the two host flags below instead.</td></tr>
+<tr><td><code>--host-product "&lt;name&gt;"</code></td><td>Override the product name used to derive the pairing key. Use the laptop's real value, not the spoofed Mac one. Use with <code>--host-serial</code>. Applies to this run only.</td></tr>
+<tr><td><code>--host-serial "&lt;serial&gt;"</code></td><td>Override the serial used to derive the pairing key. Use the laptop's real value. Use with <code>--host-product</code>. Applies to this run only.</td></tr>
+<tr><td><code>--cli</code></td><td>Skip the preference pane question and start the CLI client.</td></tr>
+<tr><td><code>--pane</code></td><td>Open the installed preference pane instead of the CLI client.</td></tr>
+<tr><td><code>--list-fingers</code></td><td>Print the enrolled prints as JSON and exit. Used by the Settings pane.</td></tr>
+<tr><td><code>--rename-finger</code></td><td>Use with <code>--finger-id &lt;ID&gt; --finger-name "&lt;name&gt;"</code>. Rename a print and exit.</td></tr>
+<tr><td><code>--delete-finger</code></td><td>Use with <code>--finger-id &lt;ID&gt;</code>. Remove a print and exit. Not available on Metallica MIS.</td></tr>
+<tr><td><code>--mmis-connect</code></td><td>Metallica MIS only. Open a session with the sensor and report the result. Used by the Settings pane.</td></tr>
+<tr><td><code>--mmis-calibrate</code></td><td>Metallica MIS only. Run the calibration and report the result. Used by the Settings pane.</td></tr>
+<tr><td><code>--fpbootd-daemon</code></td><td>Run the client as the Fpbootd pre-login socket server. Started by the Fpbootd install, you should not need to run it yourself.</td></tr>
 </tbody></table></div><p class="note">This list changes over time. New arguments are announced in the <a href="docs.html#changelog">changelog</a>.</p></section>
 <section id="menubar"><h2>Menu bar app (optional)</h2>
 <p>The daemon works the same with or without it. It needs macOS 14 Sonoma or later.</p>
@@ -93,7 +111,7 @@ open "build/Hackintosh Touch-ID.app"</code></pre>
 </div></section>
 <section id="limits"><h2>Limitations</h2><ul>
 <li>macOS only, and only macOS 14 Sonoma or later. On Linux, use the libfprint driver directly.</li>
-<li>Swipe to Lock works only on macOS 26 Tahoe with a VFS5011 sensor.</li>
+<li>Swipe to Lock works only on macOS 26 Tahoe with a VFS5011 sensor. Touch to Lock works only on macOS 26 Tahoe with a Metallica MIS sensor.</li>
 <li>No PAM module for <code>sudo</code> in a terminal yet. It is planned, but it is unknown whether modern macOS allows it.</li>
 <li>Ad-hoc code signing only. No notarization or Developer ID.</li>
 <li>Cold boot sign-in is not supported. macOS does not allow this level of access at the login window before a user has logged in. It could take months or years.</li></ul></section>
