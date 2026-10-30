@@ -57,5 +57,12 @@ case ",$FAMILIES," in *,metallica,*)
     BUILT="$BUILT, ./metallica_mis_agent"
 ;; esac
 
+case ",$FAMILIES," in *,synaptics,*)
+    echo ""
+    echo "==> Building synaptics-test (Prometheus 0F open test)..."
+    "$SCRIPT_DIR/build_synaptics_test.sh"
+    BUILT="$BUILT, ./synaptics-test"
+;; esac
+
 echo ""
 echo "Build complete (sensor family: $FAMILIES): $BUILT"
