@@ -64,3 +64,8 @@ nav.js{display:none}
 .navdr{transform:none;visibility:visible;width:220px}
 .navov{display:none}
 }
+
+.navdr a:not(.brand){display:flex;align-items:center;gap:12px}
+.ni{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;color:var(--muted)}
+.ni.fill{fill:currentColor;stroke:none}
+.navdr a:hover .ni,.navdr a.on .ni{color:var(--fg)}
