@@ -269,6 +269,8 @@ password automatically.
 
 **NOTICE** This list is set to change accordingly, there will be new launch-arguments which I will Mention in the Changelog!! Always keep up to date about these launch-args as they could heavily benefit your use-case.
 
+* ```-h```, ```--help```: Shows the list of launch arguments and exits. Needs no password. The same list is shown by `[H]` in the menu.
+* ```-v```, ```--version```: Shows the client version, build, branch and the installed daemon, FPOV and Fpbootd versions, then exits. Needs no password.
 * ```--q```: launches the Client without presenting the Verbose boot / launch
 * ```--quiet```: same like the one before, launches the client without presenting the Verbose logs.
 * ```--deploy-agent```: Runs the [3] Deploy authentication services without entering the client. This is also used when the Menubar detects the Daemon isn't installed / after a macOS update
@@ -276,11 +278,22 @@ password automatically.
 * ```--check-updates```: checks for updates without launching the client. If there is one, shows the [A] Show changelog / [Y] Download and install / [N] Cancel prompt.
 * ```--menu-updater```: checks for updates and installs one right away, with no prompts. The menu bar app's "Update Client" notification button runs this in a terminal.
 * ```--debug```: Makes the client print every log for better debugging.
+* ```--debug-full```: Same as `--debug`, but never truncates large payloads.
 * ```--list-records```: Read-only. Lists the storage, users and enrolled fingers stored on the sensor, plus database size and free space.
 * ```--wipe-records```: Deletes all enrolled prints stored on the sensor. Destructive, cannot be undone.
+* ```--enroll-test```: Metallica MIS only. Calibrates, enrolls one finger on the sensor and exits. Tester tool, run it together with `--debug`.
+* ```--verify-test```: Metallica MIS only. Calibrates, asks for one touch, matches it against the print saved by `--enroll-test` and exits. Run it together with `--debug`.
 * ```--force-pair```: Experimental. Tries to pair the sensor by writing its identity partitions. A sensor that is already paired refuses this (error `0x0404`), so use the two host flags below instead.
 * ```--host-product "<name>"```: Overrides the product name HTID uses to derive the pairing key. Use the laptop's real value, not the spoofed Mac one. Use together with `--host-serial`. Applies to this run only, nothing is saved.
 * ```--host-serial "<serial>"```: Overrides the serial HTID uses to derive the pairing key. Use the laptop's real value. Use together with `--host-product`. Applies to this run only, nothing is saved. 
+* ```--cli```: Skips the preference pane question and starts the CLI client.
+* ```--pane```: Opens the installed preference pane instead of the CLI client.
+* ```--list-fingers```: Prints the enrolled prints as JSON and exits. Used by the Settings pane.
+* ```--rename-finger```: Used with `--finger-id <ID> --finger-name "<name>"`. Renames a print and exits.
+* ```--delete-finger```: Used with `--finger-id <ID>`. Removes a print and exits. Not available on Metallica MIS.
+* ```--mmis-connect```: Metallica MIS only. Opens a session with the sensor and reports the result. Used by the Settings pane.
+* ```--mmis-calibrate```: Metallica MIS only. Runs the calibration and reports the result. Used by the Settings pane.
+* ```--fpbootd-daemon```: Runs the client as the Fpbootd pre-login socket server. Started by the Fpbootd install, you should not need to run it yourself.
 
 ## How it works
 
