@@ -6131,7 +6131,7 @@ static void check_macos_version_warning(void) {
 static bool fetch_remote_version_file(const char *branch, client_version_info_t *out) {
     char cmd[256];
     snprintf(cmd, sizeof(cmd),
-             "curl -fsS -m 3 '%s/%s/%s' 2>/dev/null",
+             "curl -fsSL -m 3 '%s/%s/%s' 2>/dev/null",
              UPDATE_RAW_BASE_URL, branch, VERSION_FILE_NAME);
 
     FILE *fp = popen(cmd, "r");
