@@ -18,7 +18,7 @@ HT_TOOL="$HT_ROOT/.ht_sensor_tool"
 # Where the headers live after the reorganization (see README, "Repository
 # layout"). Every compile uses these instead of one flat folder.
 # shellcheck disable=SC2034 # used by the scripts that source this file
-HT_INC="-I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -INBIS/include"
+HT_INC="-I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Isynaptics -INBIS/include"
 
 # Intel Homebrew lives under /usr/local. Ask brew when it is on PATH, and
 # fall back to /usr/local so the scripts still work for people who
