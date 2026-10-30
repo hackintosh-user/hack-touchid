@@ -28,6 +28,7 @@ async function loadCommits(el){
     const br=await (await fetch(`https://api.github.com/repos/${REPO}/branches?per_page=20`)).json();
     if(!Array.isArray(br))throw 0;
     let html="";
+    br.sort((a,b)=>(b.name===CL_BRANCH)-(a.name===CL_BRANCH));
     for(const b of br){
       const cs=await (await fetch(`https://api.github.com/repos/${REPO}/commits?sha=${encodeURIComponent(b.name)}&per_page=5`)).json();
       if(!Array.isArray(cs))throw 0;
