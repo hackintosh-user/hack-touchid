@@ -1,0 +1,70 @@
+name: Bump build version
+
+# After code is pushed to main, waits 4 minutes and then raises the BUILD
+# number in VERSION.txt by one. A newer push restarts the wait, so several
+# file commits made one after another end up with a single bump.
+#
+# Only the number at the end of BUILD= changes. VERSION, BRANCH and
+# CRITICAL are never touched. Docs, website, markdown, CI files, tests and
+# the prebuilt menu bar app do not trigger a bump. The bot's own commit
+# does not start another run (GITHUB_TOKEN pushes never trigger workflows).
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".github/**"
+      - "tests/**"
+      - "shared/menubar/build/**"
+      - "VERSION.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-version
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    name: Bump VERSION.txt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait 4 minutes (a newer push cancels this run and restarts the wait)
+        if: github.event_name == 'push'
+        run: sleep 240
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Bump BUILD
+        id: bump
+        shell: bash
+        run: |
+          if git log -1 --format=%s | grep -q '^Bump Version, Now: '; then
+            echo "Latest commit is already a bump. Nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          old=$(sed -n 's/^BUILD=//p' VERSION.txt | tr -d '\r')
+          prefix=$(printf '%s' "$old" | sed 's/[0-9]*$//')
+          num=$(printf '%s' "$old" | sed 's/^.*[^0-9]//')
+          if [ -z "$old" ] || [ -z "$num" ]; then
+            echo "::error::Could not read BUILD= from VERSION.txt"
+            exit 1
+          fi
+          new="${prefix}$(printf "%0${#num}d" $((10#$num + 1)))"
+          sed -i "s/^BUILD=.*/BUILD=${new}/" VERSION.txt
+          echo "new=${new}" >> "$GITHUB_OUTPUT"
+          echo "Bumped ${old} -> ${new}"
+      - name: Commit and push
+        if: steps.bump.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION.txt
+          git commit -m "Bump Version, Now: ${{ steps.bump.outputs.new }}"
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main
