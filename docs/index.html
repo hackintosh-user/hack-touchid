@@ -22,9 +22,17 @@
 <div class="card"><h3>Fully native</h3><p>No kernel extension and no libfprint at runtime. A small background daemon.</p></div>
 <div class="card"><h3>Encrypted storage</h3><p>Templates and the stored password live on a dedicated encrypted APFS volume.</p></div>
 <div class="card"><h3>Menu bar app</h3><p>Optional app to enable, disable or restart the daemon, with notifications when it is ready to swipe. On macOS Tahoe only, it also has a Swipe to Lock toggle.</p></div>
+<a class="card" href="#pane"><h3>Settings pane</h3><p>Manage fingerprints, the match threshold and updates from System Settings, no terminal needed.</p></a>
 <div class="card"><h3>Swipe to Lock (Tahoe only)</h3><p>One swipe on the sensor locks the screen. VFS5011 on macOS 26 Tahoe only. Turn it on from the menu bar app.</p></div>
 <div class="card"><h3>Touch to Lock (Tahoe only)</h3><p>A touch from an enrolled finger locks the screen. Synaptics Metallica MIS on macOS 26 Tahoe only, confirmed on <code>06cb:009a</code>.</p></div>
 <div class="card"><h3>Red light on a wrong finger</h3><p>The VFS5011 sensor light flashes red when the finger is not recognized, then goes back to the ready light.</p></div>
+</div></section>
+<section id="pane"><h2>Settings pane</h2>
+<p>HTID adds its own pane to System Settings, so you can manage fingerprints without the terminal. Install it from the client menu with <b>[I] Install Preference Pane (System Settings)</b>. It also has Sensor and About tabs.</p>
+<div class="shots">
+<figure class="shot"><img src="assets/pane-general.png" width="885" height="675" loading="lazy" alt="HackTouchID pane in System Settings, General tab: fingerprint authentication switch, daemon, client and menu bar app status, match threshold and Swipe to Lock"><figcaption><b>General.</b> Turn fingerprint authentication on or off, check the daemon, client and menu bar app, set the match threshold, and on macOS Tahoe arm Swipe to Lock.</figcaption></figure>
+<figure class="shot"><img src="assets/pane-fingerprints.png" width="884" height="674" loading="lazy" alt="HackTouchID pane in System Settings, Fingerprints tab: list of enrolled fingers with Rename and Remove buttons"><figcaption><b>Fingerprints.</b> See how many of the 10 prints are used, then rename or remove a finger. Reading and changing prints asks for your administrator password.</figcaption></figure>
+<figure class="shot"><img src="assets/pane-updates.png" width="884" height="674" loading="lazy" alt="HackTouchID pane in System Settings, Updates tab: installed and latest client and menu bar app versions"><figcaption><b>Updates.</b> Compare the installed and latest client and menu bar app. Update Client opens Terminal and runs the client's own updater.</figcaption></figure>
 </div></section>
 <section id="macos"><h2>Supported macOS</h2><div class="scroll"><table>
 <thead><tr><th>Version</th><th>Status</th></tr></thead><tbody>
