@@ -86,3 +86,8 @@ nav.js{display:none}
 84%{background-color:#bf5af2}
 }
 @media (prefers-reduced-motion:reduce){.fp-hero{animation:none;background-color:var(--accent)}}
+
+.shots{display:grid;gap:30px;margin-top:18px}
+.shot{margin:0}
+.shot img{display:block;width:100%;max-width:760px;height:auto;margin:0 auto;filter:drop-shadow(0 8px 24px rgba(0,0,0,.28))}
+.shot figcaption{max-width:760px;margin:12px auto 0;color:var(--muted);font-size:.95rem}
