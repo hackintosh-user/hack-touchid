@@ -802,6 +802,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         echo
         echo "Press Return to close this window."
         read
+        # Terminal.app only: close this window and quit Terminal if no other window is left.
+        # Runs detached so it fires after this shell has exited. Other terminal apps are left alone.
+        if [[ "$TERM_PROGRAM" == "Apple_Terminal" ]]; then
+            nohup /usr/bin/osascript -e 'delay 0.7' -e 'tell application "Terminal"' -e 'try' -e 'close (every window whose name contains "HTID-Update-Client")' -e 'end try' -e 'delay 0.3' -e 'if (count of windows) is 0 then quit' -e 'end tell' >/dev/null 2>&1 &!
+        fi
+        exit
         """
         let fileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("HTID-Update-Client.command")
         do {
