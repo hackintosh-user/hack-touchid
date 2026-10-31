@@ -302,6 +302,7 @@ static int cmpint(const void *a, const void *b) { return (*(const int *)a) - (*(
 static void median_filter(int *data, int size, int filtersize) {
     int *result = calloc(size, sizeof(int));
     int *sortbuf = calloc(filtersize, sizeof(int));
+    if (!result || !sortbuf) { free(result); free(sortbuf); return; }
     for (int i = 0; i < size; i++) {
         int i1 = i - (filtersize - 1) / 2, i2 = i + (filtersize - 1) / 2;
         if (i1 < 0) i1 = 0;
@@ -325,6 +326,7 @@ static unsigned char *assemble_lines(unsigned char *lines, int lines_len, int ma
     int line_stride = VFS5011_LINE_SIZE, width = VFS5011_IMAGE_WIDTH;
     int *offsets = calloc((size_t)(lines_len / 2), sizeof(int));
     unsigned char *output = calloc((size_t)width * max_height, 1);
+    if (!offsets || !output) { free(offsets); free(output); *out_height = 0; return NULL; }
     float y = 0.0f; int line_ind = 0;
     for (int i = 0; i < lines_len - 1; i += 2) {
         int bestmatch = i, bestdiff = 0;
