@@ -1,0 +1,55 @@
+name: Menu bar app prebuilt
+
+# Rebuilds the menu bar app and commits the result to shared/menubar/build
+# whenever its source, assets or build script change on main. Nobody has
+# to compile and commit the binary by hand any more.
+#
+# The commit is made with GITHUB_TOKEN, so it does not start another
+# workflow run (no loop). It is skipped when the build output is identical.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Hackintosh-TouchID-Menubar/VFS5011MenuBar/**"
+      - "Hackintosh-TouchID-Menubar/Assets/**"
+      - "Hackintosh-TouchID-Menubar/build_menubar_app.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: menubar-prebuilt
+  cancel-in-progress: false
+
+jobs:
+  build-and-commit:
+    name: Build and commit the prebuilt app (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Build
+        run: |
+          chmod +x Hackintosh-TouchID-Menubar/build_menubar_app.sh
+          ./Hackintosh-TouchID-Menubar/build_menubar_app.sh
+      - name: Verify app bundle was produced
+        run: |
+          APP="shared/menubar/build/Hackintosh Touch-ID.app"
+          test -x "$APP/Contents/MacOS/HackintoshTouchID"
+          cmp "$APP/Contents/Info.plist" Hackintosh-TouchID-Menubar/VFS5011MenuBar/Info.plist
+      - name: Commit the prebuilt app
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A shared/menubar/build
+          if git diff --cached --quiet; then
+            echo "Prebuilt app already up to date."
+            exit 0
+          fi
+          git commit -m "Menu bar app: rebuild prebuilt app (CI)" \
+            -m "Built from ${GITHUB_SHA} by the menubar-build workflow."
+          git pull --rebase origin main
+          git push origin HEAD:main
