@@ -41,9 +41,9 @@ This Table will have the currently Supported Sensors or sensors in **Development
 |------------------------|------|------|------------------------------------------------------------------ |----------------------------------|
 | Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex with VFS5011**    | **Fully Supported**              | 
 | Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt)** | **Fully Supported**              |
-| Prometheus 97          | 138A | 0097 | **Developing & actively testing**                                 |                                  |
+| Prometheus 97          | 138A | 0097 | **Developing & actively testing**                                 | **Unfinshed**                    |
 | Prometheus 9d          | 138A | 009d | **Developing / Supposed to work according to python-validity**    | **according to python-validity** |
-| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing**                                 |                                  | 
+| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing**                                 | **Unfinshed**                    | 
 
  * Please Keep in Mind that some sensor names are **too long to fit in the table** the VID:PID for each currently or planned sensor will be in the table and regardless the client itself checks if your sensor is supported.
  * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesn't work.
