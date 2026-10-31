@@ -311,10 +311,41 @@ class HackTouchIDPane: NSPreferencePane {
     private let sensorCalibrateButton = NSButton(title: "Calibrate", target: nil, action: nil)
     private let sensorDetailsButton = NSButton(title: "Details", target: nil, action: nil)
 
+    // Tabs actually offered in the segmented control (Sensor only when needed)
+    private var tabPages: [NSView?] = []
+    private var updatesTabIndex = -1
+
     private var refreshTimer: Timer?
     private var observers: [NSObjectProtocol] = []
 
     // MARK: Lifecycle
+
+    /// Sensors served by the Metallica backend (the ones the Sensor tab is for).
+    private static let sensorTabIDs: Set<String> = ["06cb:009a", "138a:0097", "138a:009d"]
+
+    /// True when a USB device that needs the Sensor tab is attached. Run once at load.
+    private func sensorTabNeeded() -> Bool {
+        let (status, out) = run("/usr/sbin/ioreg", ["-p", "IOUSB", "-l", "-w0"])
+        if status != 0 { return false }
+        var vendor: Int?
+        var product: Int?
+        func flush() -> Bool {
+            defer { vendor = nil; product = nil }
+            guard let v = vendor, let p = product else { return false }
+            return Self.sensorTabIDs.contains(String(format: "%04x:%04x", v, p))
+        }
+        func number(_ line: Substring, _ key: String) -> Int? {
+            guard let r = line.range(of: "\"\(key)\" = ") else { return nil }
+            let digits = line[r.upperBound...].prefix(while: { $0.isNumber })
+            return Int(digits)
+        }
+        for line in out.split(separator: "\n") {
+            if line.contains("+-o ") { if flush() { return true } }
+            if let v = number(line, "idVendor") { vendor = v }
+            if let p = number(line, "idProduct") { product = p }
+        }
+        return flush()
+    }
 
     override func loadMainView() -> NSView {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 668, height: 640))
@@ -335,7 +366,12 @@ class HackTouchIDPane: NSPreferencePane {
 
         page.addArrangedSubview(buildHeader())
 
-        let seg = NSSegmentedControl(labels: ["General", "Fingerprints", "Sensor", "Updates", "About"], trackingMode: .selectOne,
+        let showSensor = sensorTabNeeded()
+        var labels = ["General", "Fingerprints"]
+        if showSensor { labels.append("Sensor") }
+        updatesTabIndex = labels.count
+        labels += ["Updates", "About"]
+        let seg = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
                                      target: self, action: #selector(pageChanged(_:)))
         seg.selectedSegment = 0
         page.addArrangedSubview(seg)
@@ -359,6 +395,8 @@ class HackTouchIDPane: NSPreferencePane {
         sensorPage = sensorView
         updatesPage = updatesView
         aboutPage = about
+        tabPages = showSensor ? [general, fingersView, sensorView, updatesView, about]
+                              : [general, fingersView, updatesView, about]
 
         self.mainView = root
         mainViewDidLoad()
@@ -366,9 +404,8 @@ class HackTouchIDPane: NSPreferencePane {
     }
 
     @objc private func pageChanged(_ sender: NSSegmentedControl) {
-        let pages = [generalPage, fingersPage, sensorPage, updatesPage, aboutPage]
-        for (i, p) in pages.enumerated() { p?.isHidden = i != sender.selectedSegment }
-        if sender.selectedSegment == 3 && !updatesChecked { checkForUpdates() }
+        for (i, p) in tabPages.enumerated() { p?.isHidden = i != sender.selectedSegment }
+        if sender.selectedSegment == updatesTabIndex && !updatesChecked { checkForUpdates() }
     }
 
     override func mainViewDidLoad() {
@@ -1170,6 +1207,12 @@ class HackTouchIDPane: NSPreferencePane {
         echo
         echo "Press Return to close this window."
         read
+        # Terminal.app only: close this window and quit Terminal if no other window is left.
+        # Runs detached so it fires after this shell has exited. Other terminal apps are left alone.
+        if [[ "$TERM_PROGRAM" == "Apple_Terminal" ]]; then
+            nohup /usr/bin/osascript -e 'delay 0.7' -e 'tell application "Terminal"' -e 'try' -e 'close (every window whose name contains "HTID-Update-Client")' -e 'end try' -e 'delay 0.3' -e 'if (count of windows) is 0 then quit' -e 'end tell' >/dev/null 2>&1 &!
+        fi
+        exit
         """
         let fileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("HTID-Update-Client.command")
         do {
