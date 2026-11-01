@@ -259,6 +259,7 @@ class HackTouchIDPane: NSPreferencePane {
     private let daemonValue = label("")
     private let clientValue = label("")
     private let menubarValue = label("")
+    private let sensorValue = label("")
     private let thresholdPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let thresholdHint = label("", secondary: true)
     private let lockSwipeSwitch = NSSwitch()
@@ -323,16 +324,25 @@ class HackTouchIDPane: NSPreferencePane {
     /// Sensors served by the Metallica backend (the ones the Sensor tab is for).
     private static let sensorTabIDs: Set<String> = ["06cb:009a", "138a:0097", "138a:009d"]
 
-    /// True when a USB device that needs the Sensor tab is attached. Run once at load.
-    private func sensorTabNeeded() -> Bool {
+    /// Known sensors, mirroring shared/sen/supported_sensors.h: id -> (name, backend works).
+    private static let knownSensors: [String: (name: String, supported: Bool)] = [
+        "138a:0018": ("Validity VFS5011", true),
+        "147e:2016": ("UPEK/AuthenTec TouchStrip", false),
+        "06cb:009a": ("Synaptics Metallica MIS", true),
+        "138a:0097": ("Synaptics Prometheus", false),
+        "138a:009d": ("Synaptics Metallica MIS", false),
+    ]
+
+    /// Every "vvvv:pppp" id on the USB bus, read once through ioreg.
+    private func scanUSBIDs() -> [String] {
         let (status, out) = run("/usr/sbin/ioreg", ["-p", "IOUSB", "-l", "-w0"])
-        if status != 0 { return false }
+        if status != 0 { return [] }
+        var ids: [String] = []
         var vendor: Int?
         var product: Int?
-        func flush() -> Bool {
-            defer { vendor = nil; product = nil }
-            guard let v = vendor, let p = product else { return false }
-            return Self.sensorTabIDs.contains(String(format: "%04x:%04x", v, p))
+        func flush() {
+            if let v = vendor, let p = product { ids.append(String(format: "%04x:%04x", v, p)) }
+            vendor = nil; product = nil
         }
         func number(_ line: Substring, _ key: String) -> Int? {
             guard let r = line.range(of: "\"\(key)\" = ") else { return nil }
@@ -340,11 +350,22 @@ class HackTouchIDPane: NSPreferencePane {
             return Int(digits)
         }
         for line in out.split(separator: "\n") {
-            if line.contains("+-o ") { if flush() { return true } }
+            if line.contains("+-o ") { flush() }
             if let v = number(line, "idVendor") { vendor = v }
             if let p = number(line, "idProduct") { product = p }
         }
-        return flush()
+        flush()
+        return ids
+    }
+
+    /// Text for the General tab's Sensor row, built from the ids found at load.
+    private func sensorSummary(_ ids: [String]) -> String {
+        let found = ids.filter { Self.knownSensors[$0] != nil }
+        if found.isEmpty { return "No supported sensor found" }
+        return found.map { id -> String in
+            let k = Self.knownSensors[id]!
+            return "\(k.name) (\(id))" + (k.supported ? "" : ", not yet supported")
+        }.joined(separator: "\n")
     }
 
     override func loadMainView() -> NSView {
@@ -366,7 +387,9 @@ class HackTouchIDPane: NSPreferencePane {
 
         page.addArrangedSubview(buildHeader())
 
-        let showSensor = sensorTabNeeded()
+        let usbIDs = scanUSBIDs()
+        let showSensor = usbIDs.contains { Self.sensorTabIDs.contains($0) }
+        sensorValue.stringValue = sensorSummary(usbIDs)
         var labels = ["General", "Fingerprints"]
         if showSensor { labels.append("Sensor") }
         updatesTabIndex = labels.count
@@ -564,11 +587,12 @@ class HackTouchIDPane: NSPreferencePane {
         for v in thresholdChoices { thresholdPopup.addItem(withTitle: "\(v)") }
         thresholdPopup.target = self
         thresholdPopup.action = #selector(thresholdChanged)
-        for f in [daemonValue, clientValue, menubarValue] { f.alignment = .right }
+        for f in [daemonValue, clientValue, menubarValue, sensorValue] { f.alignment = .right }
         let statusGroup = group("Status", rows: [
             settingRow("Daemon", control: daemonValue),
             settingRow("Client", control: clientValue),
             settingRow("Menu bar app", control: menubarValue),
+            settingRow("Sensor", control: sensorValue),
         ])
         let thresholdGroup = group(nil, rows: [
             settingRow("Match threshold", subtitle: thresholdHint, control: thresholdPopup),
