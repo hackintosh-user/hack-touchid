@@ -39,7 +39,7 @@ into the prompt automatically.
 This Table will have the currently Supported Sensors or sensors in **Development** or **Planned Support**. Please keep your expectations in check, this is a hobby project.
 | Sensor Name / Model    | VID  | PID  | Support status                                                                | Supported Features               |
 |------------------------|------|------|-------------------------------------------------------------------------------|----------------------------------|
-| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (thanks Hackintosh-user)**    | **Fully Supported**              | 
+| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (Thanks Hackintosh-user)**    | **Fully Supported**              | 
 | Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt)**             | **Fully Supported**              |
 | Prometheus 97          | 138A | 0097 | **Developing & actively testing**                                             | **Unfinshed**                    |
 | Prometheus 9d          | 138A | 009d | **Developing / Supposed to work according to python-validity**                | **according to python-validity** |
