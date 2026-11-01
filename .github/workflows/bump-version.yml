@@ -18,6 +18,7 @@ on:
       - ".github/**"
       - "tests/**"
       - "shared/menubar/build/**"
+      - "shared/pane/build/**"
       - "VERSION.txt"
   workflow_dispatch:
 
