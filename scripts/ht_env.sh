@@ -18,7 +18,7 @@ HT_TOOL="$HT_ROOT/.ht_sensor_tool"
 # Where the headers live after the reorganization (see README, "Repository
 # layout"). Every compile uses these instead of one flat folder.
 # shellcheck disable=SC2034 # used by the scripts that source this file
-HT_INC="-I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -INBIS/include"
+HT_INC="-I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Ivfs7552 -INBIS/include"
 
 # Intel Homebrew lives under /usr/local. Ask brew when it is on PATH, and
 # fall back to /usr/local so the scripts still work for people who
@@ -56,6 +56,8 @@ ht_dep_installed() {
         libusb)      [ -f "$HT_LIBUSB_INC/libusb.h" ] ;;
         openssl@3)   [ -f "$HT_OPENSSL_PREFIX/include/openssl/evp.h" ] ;;
         innoextract) command -v innoextract >/dev/null 2>&1 || [ -x "$HT_BREW_PREFIX/bin/innoextract" ] ;;
+        sevenzip)    command -v 7zz >/dev/null 2>&1 || command -v 7z >/dev/null 2>&1 \
+                         || [ -x "$HT_BREW_PREFIX/bin/7zz" ] || [ -x "$HT_BREW_PREFIX/bin/7z" ] ;;
         *)           return 1 ;;
     esac
 }
