@@ -172,3 +172,41 @@ bool metallica_mis_get_factory_calibration_values(metallica_mis_tls_t *tls,
     *out_len = sliced_len;
     return true;
 }
+
+/* factory_bits[7][4:] -- sensor.py open(): `if 7 in factory_bits: self.factory_calib_data =
+ * factory_bits[7][4:]`. Only sensor types that use line_update_type_2 (0xdb) need it. */
+bool metallica_mis_get_factory_calib_data(metallica_mis_tls_t *tls,
+                                           uint8_t *out, size_t out_max, size_t *out_len) {
+    uint8_t val[4096];
+    size_t val_len = 0;
+
+    if (!metallica_mis_get_factory_bits(tls, 0x0e00, 7, val, sizeof(val), &val_len)) {
+        fprintf(stderr, "mmis_factory_bits: get_factory_calib_data: subtag 7 lookup failed\n");
+        return false;
+    }
+    if (val_len < 4 || val_len - 4 > out_max) {
+        fprintf(stderr, "mmis_factory_bits: subtag 7 value has a bad size (%zu)\n", val_len);
+        return false;
+    }
+    memcpy(out, val + 4, val_len - 4);
+    *out_len = val_len - 4;
+    return true;
+}
+
+/* The sensor type lives in factory bits tag 0x0e00, subtag 8, as a little-endian u32
+ * (0x199 on 06cb:009a, 0xdb on 138a:0097, seen in real logs). */
+bool metallica_mis_get_sensor_type(metallica_mis_tls_t *tls, uint32_t *type_out) {
+    uint8_t val[64];
+    size_t val_len = 0;
+
+    if (!metallica_mis_get_factory_bits(tls, 0x0e00, 8, val, sizeof(val), &val_len)) {
+        fprintf(stderr, "mmis_factory_bits: get_sensor_type: subtag 8 lookup failed\n");
+        return false;
+    }
+    if (val_len < 4) {
+        fprintf(stderr, "mmis_factory_bits: subtag 8 value too short (%zu bytes)\n", val_len);
+        return false;
+    }
+    *type_out = rd_u32le(val);
+    return true;
+}

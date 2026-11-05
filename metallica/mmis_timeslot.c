@@ -643,3 +643,193 @@ bool mmis_process_calibration_results(const uint8_t *cooked_data, size_t cooked_
     *out_len = cooked_data_len;
     return true;
 }
+
+/* ---------------------------------------------------------------------------
+ * line_update_type_2 (sensor type 0xdb, Prometheus 97 / 138a:0097)
+ * Ported from python-validity master sensor.py line_update_type_2().
+ * Differences vs type 1: the 0x34 chunk is patched but NOT prefixed with a key
+ * line, there is no 0x44 chunk, three Lines are built (calibration blob,
+ * factory_calib_data from subtag 7, factory values) and there is no 0x43
+ * chunk. calib_data is never used.
+ * ------------------------------------------------------------------------ */
+static const uint8_t MMIS_T2_IDENTIFY_4E[] = {
+    0xfb,0xb2,0x0f,0x00,0x00,0x00,0x0f,0x00,0x30,0x00,0x00,0x00,0x60,0x01,0x02,0x00,
+    0x40,0x01,0x0a,0x00,0x01,0x80,0x00,0x00,0x0a,0x02,0x00,0x00,0x0b,0x19,0x00,0x00,
+    0x88,0x13,0xb8,0x0b,0x01,0x09,0x10,0x00,
+};
+
+static const uint8_t MMIS_T2_IDENTIFY_2E[] = {
+    0x02,0x00,0x18,0x00,0x02,0x00,0x00,0x00,0x90,0x00,0x90,0x00,0x4d,0x01,0x00,0x00,
+    0x90,0x01,0x7c,0x01,0x3c,0x32,0x32,0x32,0x64,0x0a,0x02,0x01,
+};
+
+static const uint8_t MMIS_T2_ENROLL_26[] = {
+    0xfb,0xb2,0x0f,0x00,0x00,0x00,0x0f,0x00,0x30,0x00,0x00,0x00,0x60,0x01,0x02,0x00,
+    0x40,0x01,0x0a,0x00,0x01,0x80,0x00,0x00,0x0a,0x02,0x00,0x00,0x0b,0x19,0x00,0x00,
+    0x50,0xc3,0x60,0xea,0x01,0x09,0x10,0x00,
+};
+
+static const uint8_t MMIS_T2_ENROLL_2E[] = {
+    0x02,0x00,0x18,0x00,0x23,0x00,0x00,0x00,0x90,0x00,0x90,0x00,0x4d,0x01,0x00,0x00,
+    0x90,0x01,0x7c,0x01,0x3c,0x32,0x32,0x32,0x64,0x0a,0x02,0x01,
+};
+
+bool mmis_line_update_type_2(mmis_capture_mode_t mode,
+                              mmis_chunk_t *chunks_io, size_t *n_chunks_io, size_t max_chunks,
+                              uint8_t repeat_multiplier, uint8_t key_calibration_line,
+                              const uint8_t *factory_calibration_values, size_t factory_calibration_values_len,
+                              const uint8_t *factory_calib_data, size_t factory_calib_data_len,
+                              const uint8_t *calibration_blob, size_t calibration_blob_len,
+                              uint8_t *scratch, size_t scratch_len) {
+    uint8_t *cursor = scratch;
+    uint8_t *scratch_end = scratch + scratch_len;
+    size_t n = *n_chunks_io;
+
+    if (factory_calib_data_len == 0) return false; /* subtag 7 is required for this type */
+
+    size_t idx34 = (size_t)-1;
+    for (size_t i = 0; i < n; i++) {
+        if (chunks_io[i].tag == 0x34) { idx34 = i; break; }
+    }
+    if (idx34 == (size_t)-1) return false;
+
+    size_t tst_len = chunks_io[idx34].len;
+    uint8_t *tst = scratch_alloc(&cursor, scratch_end, tst_len);
+    if (!tst) return false;
+    memcpy(tst, chunks_io[idx34].data, tst_len);
+    mmis_patch_timeslot_table(tst, tst_len, true, repeat_multiplier);
+    if (mode != MMIS_CAPTURE_CALIBRATE) {
+        /* non-fatal, mirrors sensor.py returning the buffer unmodified */
+        mmis_patch_timeslot_again(tst, tst_len, factory_calibration_values,
+                                   factory_calibration_values_len, key_calibration_line);
+    }
+    chunks_io[idx34].data = tst;
+
+    /* Reply Configuration */
+    if (n >= max_chunks) return false;
+    chunks_io[n].tag = 0x17; chunks_io[n].data = NULL; chunks_io[n].len = 0; n++;
+
+    if (mode == MMIS_CAPTURE_IDENTIFY) {
+        if (n + 2 > max_chunks) return false;
+        chunks_io[n].tag = 0x4e; chunks_io[n].data = MMIS_T2_IDENTIFY_4E; chunks_io[n].len = sizeof(MMIS_T2_IDENTIFY_4E); n++;
+        chunks_io[n].tag = 0x2e; chunks_io[n].data = MMIS_T2_IDENTIFY_2E; chunks_io[n].len = sizeof(MMIS_T2_IDENTIFY_2E); n++;
+    } else if (mode == MMIS_CAPTURE_ENROLL) {
+        if (n + 2 > max_chunks) return false;
+        chunks_io[n].tag = 0x26; chunks_io[n].data = MMIS_T2_ENROLL_26; chunks_io[n].len = sizeof(MMIS_T2_ENROLL_26); n++;
+        chunks_io[n].tag = 0x2e; chunks_io[n].data = MMIS_T2_ENROLL_2E; chunks_io[n].len = sizeof(MMIS_T2_ENROLL_2E); n++;
+    }
+
+    mmis__line_t lines[3];
+    size_t pc, ilen;
+
+    if (!mmis_find_nth_insn(tst, tst_len, MMIS_OP_ENABLE_RX, 2, &pc, &ilen)) return false;
+    lines[0].mask = 0xff;
+    lines[0].flags = (uint32_t)((pc + 1) | 0x3000000u);
+    lines[0].data = calibration_blob;
+    lines[0].data_len = calibration_blob_len;
+
+    if (!mmis_find_nth_regwrite(tst, tst_len, 0x800020fcu, 1, &pc, &ilen)) return false;
+    lines[1].mask = 0xff;
+    lines[1].flags = (uint32_t)((pc + 1) | 0x3000000u);
+    lines[1].data = factory_calib_data;
+    lines[1].data_len = factory_calib_data_len;
+
+    if (!mmis_find_nth_regwrite(tst, tst_len, 0x8000203cu, 1, &pc, &ilen)) return false;
+    lines[2].mask = 0xff;
+    lines[2].flags = (uint32_t)((pc + 1) | 0x3000000u);
+    lines[2].data = factory_calibration_values;
+    lines[2].data_len = factory_calibration_values_len;
+
+    /* align every line's data to dwords */
+    size_t total = 0;
+    for (size_t i = 0; i < 3; i++) {
+        size_t pad = lines[i].data_len % 4;
+        size_t newlen = lines[i].data_len + (pad ? 4 - pad : 0);
+        uint8_t *nb = scratch_alloc(&cursor, scratch_end, newlen);
+        if (!nb) return false;
+        memcpy(nb, lines[i].data, lines[i].data_len);
+        memset(nb + lines[i].data_len, 0, newlen - lines[i].data_len);
+        lines[i].data = nb;
+        lines[i].data_len = newlen;
+        total += newlen;
+    }
+
+    size_t lu_len = 4 + 3 * 8 + total;
+    uint8_t *lu = scratch_alloc(&cursor, scratch_end, lu_len);
+    if (!lu) return false;
+    size_t off = 0;
+    lu[off++] = 3; lu[off++] = 0; lu[off++] = 0; lu[off++] = 0;
+    for (size_t i = 0; i < 3; i++) {
+        uint32_t m = lines[i].mask, f = lines[i].flags;
+        lu[off++] = (uint8_t)m; lu[off++] = (uint8_t)(m >> 8); lu[off++] = (uint8_t)(m >> 16); lu[off++] = (uint8_t)(m >> 24);
+        lu[off++] = (uint8_t)f; lu[off++] = (uint8_t)(f >> 8); lu[off++] = (uint8_t)(f >> 16); lu[off++] = (uint8_t)(f >> 24);
+    }
+    for (size_t i = 0; i < 3; i++) {
+        memcpy(lu + off, lines[i].data, lines[i].data_len);
+        off += lines[i].data_len;
+    }
+    if (n >= max_chunks) return false;
+    chunks_io[n].tag = 0x30; chunks_io[n].data = lu; chunks_io[n].len = (uint16_t)lu_len; n++;
+
+    *n_chunks_io = n;
+    return true;
+}
+
+size_t mmis_build_cmd_02_type2(mmis_capture_mode_t mode,
+                                const uint8_t *hardcoded_prog, size_t hardcoded_prog_len,
+                                uint16_t bytes_per_line, uint8_t calibration_frames, size_t lines_per_frame,
+                                uint8_t repeat_multiplier, uint8_t key_calibration_line,
+                                const uint8_t *factory_calibration_values, size_t factory_calibration_values_len,
+                                const uint8_t *factory_calib_data, size_t factory_calib_data_len,
+                                const uint8_t *calibration_blob, size_t calibration_blob_len,
+                                uint8_t *out, size_t out_max,
+                                uint8_t *scratch, size_t scratch_len) {
+    mmis_chunk_t chunks[32];
+    size_t n = mmis_split_chunks(hardcoded_prog, hardcoded_prog_len, chunks, 32);
+    if (n == (size_t)-1 || n > 32) return 0;
+
+    if (!mmis_line_update_type_2(mode, chunks, &n, 32, repeat_multiplier, key_calibration_line,
+                                  factory_calibration_values, factory_calibration_values_len,
+                                  factory_calib_data, factory_calib_data_len,
+                                  calibration_blob, calibration_blob_len,
+                                  scratch, scratch_len)) {
+        return 0;
+    }
+
+    uint16_t req_lines = 0;
+    if (mode == MMIS_CAPTURE_CALIBRATE) {
+        req_lines = (uint16_t)((size_t)calibration_frames * lines_per_frame + 1);
+    }
+
+    if (out_max < 5) return 0;
+    out[0] = 2;
+    out[1] = (uint8_t)(bytes_per_line & 0xff);
+    out[2] = (uint8_t)(bytes_per_line >> 8);
+    out[3] = (uint8_t)(req_lines & 0xff);
+    out[4] = (uint8_t)(req_lines >> 8);
+
+    size_t merged_len = mmis_merge_chunks(chunks, n, out + 5, out_max - 5);
+    if (merged_len == 0 && n > 0) return 0;
+    return 5 + merged_len;
+}
+
+/* average() for lines_per_frame / lines_per_calibration_data <= 1 (type 0xdb):
+ * skip the first two frames, then average the rest byte by byte. */
+bool mmis_average_flat(const uint8_t *raw, size_t raw_len,
+                        size_t lines_per_frame, size_t bytes_per_line, size_t calibration_frames,
+                        uint8_t *out, size_t out_max, size_t *out_len) {
+    if (calibration_frames < 3) return false;
+    size_t frame_size = lines_per_frame * bytes_per_line;
+    size_t input_frames = calibration_frames - 2;
+    size_t base = frame_size * 2;
+    if (frame_size == 0 || frame_size > out_max) return false;
+    if (base + frame_size * input_frames > raw_len) return false;
+
+    for (size_t i = 0; i < frame_size; i++) {
+        uint32_t sum = 0;
+        for (size_t f = 0; f < input_frames; f++) sum += raw[base + f * frame_size + i];
+        out[i] = (uint8_t)(sum / input_frames);
+    }
+    *out_len = frame_size;
+    return true;
+}

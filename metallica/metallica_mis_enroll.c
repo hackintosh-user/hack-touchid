@@ -19,7 +19,7 @@
 #include "metallica_mis_debug.h"
 #include "metallica_mis_flash.h"
 #include "metallica_mis_tls.h"
-#include "metallica_type0199_tables.h"
+#include "mmis_sensor_profile.h"
 #include "mmis_factory_bits.h"
 #include "mmis_timeslot.h"
 
@@ -149,14 +149,52 @@ static int simple_app(metallica_mis_tls_t *tls, const char *what, const unsigned
 
 /* ---- capture context: what build_cmd_02(ENROLL) needs ---- */
 typedef struct {
-    uint8_t prog[METALLICA_TYPE0199_PROG_MAX_LEN];
+    const mmis_sensor_profile_t *prof;
+    uint8_t prog[MMIS_PROG_MAX_LEN];
     size_t prog_len;
     size_t lines_per_frame;
     uint8_t factory[4096];
     size_t factory_len;
+    uint8_t factory7[4096];   /* factory bits subtag 7 [4:], type 0xdb only */
+    size_t factory7_len;
     uint8_t calib[16384];
     size_t calib_len;
 } enroll_ctx_t;
+
+/* Capture setup shared by enroll, verify and the agent: pick the sensor profile from the
+ * factory sensor type, build the capture program and read the factory values. Falls back to
+ * type 0x199 (the original, hardware-proven path) if the type cannot be read. */
+static int ctx_setup(metallica_mis_tls_t *tls, enroll_ctx_t *ctx, const char *who) {
+    uint32_t stype = 0x199;
+    if (!metallica_mis_get_sensor_type(tls, &stype)) {
+        fprintf(stderr, "metallica_mis: %s: could not read the sensor type, assuming 0x199\n", who);
+        stype = 0x199;
+    }
+    ctx->prof = mmis_sensor_profile_get(stype);
+    if (!ctx->prof) {
+        fprintf(stderr, "metallica_mis: %s: sensor type 0x%x is not supported\n", who, stype);
+        return -1;
+    }
+    mmis_dbg("%s: sensor profile %s", who, ctx->prof->name);
+
+    ctx->prof->build_prog(ctx->prog, &ctx->prog_len);
+    if (!mmis_get_lines_per_frame(ctx->prog, ctx->prog_len, ctx->prof->repeat_multiplier,
+                                  &ctx->lines_per_frame)) {
+        fprintf(stderr, "metallica_mis: %s: mmis_get_lines_per_frame() failed\n", who);
+        return -1;
+    }
+    if (!metallica_mis_get_factory_calibration_values(tls, ctx->factory, sizeof(ctx->factory), &ctx->factory_len)) {
+        fprintf(stderr, "metallica_mis: %s: get_factory_calibration_values() failed\n", who);
+        return -1;
+    }
+    ctx->factory7_len = 0;
+    if (ctx->prof->line_update_type == 2 &&
+        !metallica_mis_get_factory_calib_data(tls, ctx->factory7, sizeof(ctx->factory7), &ctx->factory7_len)) {
+        fprintf(stderr, "metallica_mis: %s: get_factory_calib_data() failed\n", who);
+        return -1;
+    }
+    return 0;
+}
 
 /* Daemon use: s_agent_mode keeps capture_mode() quiet, and s_abort_cb lets the daemon stop a
  * wait for the finger (screen unlocked, sensor yielded) within about 300 ms. */
@@ -185,14 +223,11 @@ static int capture_mode(metallica_mis_tls_t *tls, enroll_ctx_t *ctx, mmis_captur
     unsigned char intr[1024];
     int rc = -1;
 
-    size_t cmd_len = mmis_build_cmd_02(
-        mode, ctx->prog, ctx->prog_len,
-        METALLICA_TYPE0199_BYTES_PER_LINE, METALLICA_TYPE0199_CALIBRATION_FRAMES, ctx->lines_per_frame,
-        METALLICA_TYPE0199_REPEAT_MULTIPLIER, METALLICA_TYPE0199_KEY_CALIBRATION_LINE,
+    size_t cmd_len = mmis_profile_build_cmd_02(
+        ctx->prof, mode, ctx->prog, ctx->prog_len, ctx->lines_per_frame,
         ctx->factory, ctx->factory_len,
+        ctx->factory7, ctx->factory7_len,
         ctx->calib, ctx->calib_len,
-        METALLICA_TYPE0199_LINES_PER_CALIBRATION_DATA, METALLICA_TYPE0199_LINE_WIDTH,
-        METALLICA_TYPE0199_CALIB_BLOB, sizeof(METALLICA_TYPE0199_CALIB_BLOB),
         cmd_buf, sizeof(cmd_buf), scratch, sizeof(scratch));
     if (cmd_len == 0) {
         fprintf(stderr, "metallica_mis_enroll: build_cmd_02(%s) failed\n", mname);
@@ -560,16 +595,7 @@ static int enroll_impl(bool guided, mmis_replace_cb replace_cb) {
     }
 
     /* capture setup, same as metallica_mis_do_calibrate() */
-    metallica_type0199_build_prog(ctx.prog, &ctx.prog_len);
-    if (!mmis_get_lines_per_frame(ctx.prog, ctx.prog_len, METALLICA_TYPE0199_REPEAT_MULTIPLIER,
-                                  &ctx.lines_per_frame)) {
-        fprintf(stderr, "metallica_mis: enroll: mmis_get_lines_per_frame() failed\n");
-        goto done;
-    }
-    if (!metallica_mis_get_factory_calibration_values(&tls, ctx.factory, sizeof(ctx.factory), &ctx.factory_len)) {
-        fprintf(stderr, "metallica_mis: enroll: get_factory_calibration_values() failed\n");
-        goto done;
-    }
+    if (ctx_setup(&tls, &ctx, "enroll") != 0) goto done;
 
     printf("\nStep 1 of 3: calibrating. Keep your finger OFF the sensor until this is done.\n");
     fflush(stdout);
@@ -805,16 +831,7 @@ static int verify_impl(bool guided) {
         goto done;
     }
 
-    metallica_type0199_build_prog(ctx.prog, &ctx.prog_len);
-    if (!mmis_get_lines_per_frame(ctx.prog, ctx.prog_len, METALLICA_TYPE0199_REPEAT_MULTIPLIER,
-                                  &ctx.lines_per_frame)) {
-        fprintf(stderr, "metallica_mis: verify: mmis_get_lines_per_frame() failed\n");
-        goto done;
-    }
-    if (!metallica_mis_get_factory_calibration_values(&tls, ctx.factory, sizeof(ctx.factory), &ctx.factory_len)) {
-        fprintf(stderr, "metallica_mis: verify: get_factory_calibration_values() failed\n");
-        goto done;
-    }
+    if (ctx_setup(&tls, &ctx, "verify") != 0) goto done;
 
     printf("\nStep 1 of 2: calibrating. Keep your finger OFF the sensor until this is done.\n");
     fflush(stdout);
@@ -905,11 +922,7 @@ int metallica_mis_agent_open(void) {
     s_agent_prints = users;
 
     if (!s_agent_calibrated) {
-        metallica_type0199_build_prog(s_agent_ctx.prog, &s_agent_ctx.prog_len);
-        if (!mmis_get_lines_per_frame(s_agent_ctx.prog, s_agent_ctx.prog_len, METALLICA_TYPE0199_REPEAT_MULTIPLIER,
-                                      &s_agent_ctx.lines_per_frame)) goto fail;
-        if (!metallica_mis_get_factory_calibration_values(&s_agent_tls, s_agent_ctx.factory,
-                                                          sizeof(s_agent_ctx.factory), &s_agent_ctx.factory_len)) goto fail;
+        if (ctx_setup(&s_agent_tls, &s_agent_ctx, "agent") != 0) goto fail;
         if (metallica_mis_do_calibrate_ex(&s_agent_tls, s_agent_ctx.calib, sizeof(s_agent_ctx.calib),
                                           &s_agent_ctx.calib_len) != 0) goto fail;
         s_agent_calibrated = true;

@@ -89,7 +89,7 @@
 #include "mmis_timeslot.h"
 #include "mmis_calibrate.h"
 #include "mmis_factory_bits.h"
-#include "metallica_type0199_tables.h"
+#include "mmis_sensor_profile.h"
 /* #include "hack-touchid-matcher.h"        -- reused unmodified once capture works */
 /* #include "hack-touchid-menubar-ipc.h"    -- reused unmodified once capture works */
 
@@ -1093,7 +1093,7 @@ int metallica_mis_send_init(void) {
  *                 # no on-disk calib_data cache exists in this client yet
  *
  * Type 0x199 is currently the only supported device (all constants below
- * come from metallica_type0199_tables.h) -- same scope limit as the rest
+ * come from mmis_sensor_profile.h: 0x199 and 0xdb) -- same scope limit as the rest
  * of this backend so far.
  *
  * Returns 0 on success, -1 on any failure (transport, malformed reply,
@@ -1102,14 +1102,25 @@ int metallica_mis_send_init(void) {
 int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
                                   uint8_t *calib_out, size_t calib_out_max, size_t *calib_len_out) {
     if (calib_len_out) *calib_len_out = 0;
-    /* ---- one-time setup: hardcoded capture program + factory bits ---- */
-    uint8_t prog[METALLICA_TYPE0199_PROG_MAX_LEN];
+    /* ---- one-time setup: sensor profile, capture program, factory bits ---- */
+    uint32_t sensor_type = 0x199;
+    if (!metallica_mis_get_sensor_type(tls, &sensor_type)) {
+        fprintf(stderr, "metallica_mis_do_calibrate: could not read the sensor type, assuming 0x199\n");
+        sensor_type = 0x199;
+    }
+    const mmis_sensor_profile_t *prof = mmis_sensor_profile_get(sensor_type);
+    if (!prof) {
+        fprintf(stderr, "metallica_mis_do_calibrate: sensor type 0x%x is not supported\n", sensor_type);
+        return -1;
+    }
+    fprintf(stderr, "metallica_mis: calibrating as %s\n", prof->name);
+
+    uint8_t prog[MMIS_PROG_MAX_LEN];
     size_t prog_len = 0;
-    metallica_type0199_build_prog(prog, &prog_len);
+    prof->build_prog(prog, &prog_len);
 
     size_t lines_per_frame = 0;
-    if (!mmis_get_lines_per_frame(prog, prog_len, METALLICA_TYPE0199_REPEAT_MULTIPLIER,
-                                   &lines_per_frame)) {
+    if (!mmis_get_lines_per_frame(prog, prog_len, prof->repeat_multiplier, &lines_per_frame)) {
         fprintf(stderr, "metallica_mis_do_calibrate: mmis_get_lines_per_frame() failed\n");
         return -1;
     }
@@ -1120,6 +1131,14 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
                                                         sizeof(factory_calibration_values),
                                                         &factory_len)) {
         fprintf(stderr, "metallica_mis_do_calibrate: get_factory_calibration_values() failed\n");
+        return -1;
+    }
+    uint8_t factory_calib_data[4096];
+    size_t factory7_len = 0;
+    if (prof->line_update_type == 2 &&
+        !metallica_mis_get_factory_calib_data(tls, factory_calib_data, sizeof(factory_calib_data),
+                                              &factory7_len)) {
+        fprintf(stderr, "metallica_mis_do_calibrate: get_factory_calib_data() failed\n");
         return -1;
     }
     /* [DIAGNOSTIC, Sep 8 - remove once cmd_02 status=0x0404 is root-caused]
@@ -1142,8 +1161,7 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
                                         * read_82() ceiling is 1MB, this is
                                         * a deliberately smaller but still
                                         * comfortable margin. */
-    static uint8_t cooked_buf[16384]; /* >= lines_per_calibration_data(112) *
-                                        * bytes_per_line(0x78) = 13440 */
+    static uint8_t cooked_buf[32768]; /* >= 0x199: 112 * 0x78 = 13440, 0xdb: 144 * 0x98 = 21888 */
 
     /* ---- running calib_data accumulator, ping-ponged between two
      * fixed buffers since mmis_process_calibration_results() cannot
@@ -1153,17 +1171,14 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
     uint8_t *calib_cur = calib_a, *calib_next = calib_b;
     size_t calib_cur_len = 0; /* empty == "no prior calibration data", matches self.calib_data = b'' */
 
-    for (int i = 0; i < METALLICA_TYPE0199_CALIBRATION_ITERATIONS; i++) {
+    for (int i = 0; i < prof->calibration_iterations; i++) {
         fprintf(stderr, "metallica_mis: calibration iteration %d...\n", i);
 
-        size_t cmd_len = mmis_build_cmd_02(
-            MMIS_CAPTURE_CALIBRATE, prog, prog_len,
-            METALLICA_TYPE0199_BYTES_PER_LINE, METALLICA_TYPE0199_CALIBRATION_FRAMES, lines_per_frame,
-            METALLICA_TYPE0199_REPEAT_MULTIPLIER, METALLICA_TYPE0199_KEY_CALIBRATION_LINE,
+        size_t cmd_len = mmis_profile_build_cmd_02(
+            prof, MMIS_CAPTURE_CALIBRATE, prog, prog_len, lines_per_frame,
             factory_calibration_values, factory_len,
+            factory_calib_data, factory7_len,
             calib_cur, calib_cur_len,
-            METALLICA_TYPE0199_LINES_PER_CALIBRATION_DATA, METALLICA_TYPE0199_LINE_WIDTH,
-            METALLICA_TYPE0199_CALIB_BLOB, sizeof(METALLICA_TYPE0199_CALIB_BLOB),
             cmd_buf, sizeof(cmd_buf), scratch, sizeof(scratch));
         if (cmd_len == 0) {
             fprintf(stderr, "metallica_mis_do_calibrate: build_cmd_02() failed on iteration %d\n", i);
@@ -1194,17 +1209,15 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
         }
 
         size_t cooked_len = 0;
-        if (!mmis_average(raw_buf, (size_t)raw_len, lines_per_frame,
-                           METALLICA_TYPE0199_BYTES_PER_LINE,
-                           METALLICA_TYPE0199_LINES_PER_CALIBRATION_DATA,
-                           cooked_buf, sizeof(cooked_buf), &cooked_len)) {
+        if (!mmis_profile_average(prof, raw_buf, (size_t)raw_len, lines_per_frame,
+                                  cooked_buf, sizeof(cooked_buf), &cooked_len)) {
             fprintf(stderr, "metallica_mis_do_calibrate: average() failed on iteration %d\n", i);
             return -1;
         }
 
         size_t written_len = 0;
         if (!mmis_process_calibration_results(cooked_buf, cooked_len,
-                                               METALLICA_TYPE0199_BYTES_PER_LINE,
+                                               prof->bytes_per_line,
                                                calib_cur, calib_cur_len,
                                                calib_next, sizeof(calib_b), &written_len)) {
             fprintf(stderr, "metallica_mis_do_calibrate: process_calibration_results() failed "
@@ -1223,14 +1236,11 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
     /* ---- blank-image capture for the clean-slate blob ---- */
     fprintf(stderr, "metallica_mis: requesting a blank image...\n");
 
-    size_t cmd_len = mmis_build_cmd_02(
-        MMIS_CAPTURE_CALIBRATE, prog, prog_len,
-        METALLICA_TYPE0199_BYTES_PER_LINE, METALLICA_TYPE0199_CALIBRATION_FRAMES, lines_per_frame,
-        METALLICA_TYPE0199_REPEAT_MULTIPLIER, METALLICA_TYPE0199_KEY_CALIBRATION_LINE,
+    size_t cmd_len = mmis_profile_build_cmd_02(
+        prof, MMIS_CAPTURE_CALIBRATE, prog, prog_len, lines_per_frame,
         factory_calibration_values, factory_len,
+        factory_calib_data, factory7_len,
         calib_cur, calib_cur_len,
-        METALLICA_TYPE0199_LINES_PER_CALIBRATION_DATA, METALLICA_TYPE0199_LINE_WIDTH,
-        METALLICA_TYPE0199_CALIB_BLOB, sizeof(METALLICA_TYPE0199_CALIB_BLOB),
         cmd_buf, sizeof(cmd_buf), scratch, sizeof(scratch));
     if (cmd_len == 0) {
         fprintf(stderr, "metallica_mis_do_calibrate: build_cmd_02() failed for blank image\n");
@@ -1250,10 +1260,8 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
     }
 
     size_t cooked_len = 0;
-    if (!mmis_average(raw_buf, (size_t)raw_len, lines_per_frame,
-                       METALLICA_TYPE0199_BYTES_PER_LINE,
-                       METALLICA_TYPE0199_LINES_PER_CALIBRATION_DATA,
-                       cooked_buf, sizeof(cooked_buf), &cooked_len)) {
+    if (!mmis_profile_average(prof, raw_buf, (size_t)raw_len, lines_per_frame,
+                              cooked_buf, sizeof(cooked_buf), &cooked_len)) {
         fprintf(stderr, "metallica_mis_do_calibrate: average() failed for blank image\n");
         return -1;
     }
