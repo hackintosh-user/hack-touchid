@@ -37,6 +37,8 @@ unsigned char *upek_capture_fingerprint_image(libusb_device_handle *handle, int 
 int upek_open_device(void);
 void upek_close_device(void);
 bool upek_sensor_is_present(void);
+/* Width of the image the last capture produced. 288 until a bcdDevice 2
+ * capture has read the real sensor size. */
 int upek_image_width(void);
 
 #endif /* __UPEK_DAEMON_H */

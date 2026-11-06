@@ -61,8 +61,6 @@ size_t mmis_split_chunks(const uint8_t *b, size_t len, mmis_chunk_t *out, size_t
  * <HH tag,len><payload> form. Returns bytes written, or 0 if out_max too small. */
 size_t mmis_merge_chunks(const mmis_chunk_t *chunks, size_t n_chunks, uint8_t *out, size_t out_max);
 
-#endif /* MMIS_TIMESLOT_H */
-
 /* ---- patch_timeslot_table / patch_timeslot_again ------------------------
  * Ports of Sensor.patch_timeslot_table()/patch_timeslot_again() from
  * sensor.py. Both mutate a copy of the Timeslot Table 2D (tag 0x34) chunk
@@ -194,3 +192,33 @@ bool mmis_process_calibration_results(const uint8_t *cooked_data, size_t cooked_
                                        size_t bytes_per_line,
                                        const uint8_t *prev_calib_data, size_t prev_calib_data_len,
                                        uint8_t *out, size_t out_max, size_t *out_len);
+
+/* ---- type 0xdb (line_update_type_2) -------------------------------------
+ * Prometheus 97 (138a:0097). factory_calib_data is factory bits subtag 7
+ * with the first 4 bytes skipped. See mmis_timeslot.c. */
+bool mmis_line_update_type_2(mmis_capture_mode_t mode,
+                              mmis_chunk_t *chunks_io, size_t *n_chunks_io, size_t max_chunks,
+                              uint8_t repeat_multiplier, uint8_t key_calibration_line,
+                              const uint8_t *factory_calibration_values, size_t factory_calibration_values_len,
+                              const uint8_t *factory_calib_data, size_t factory_calib_data_len,
+                              const uint8_t *calibration_blob, size_t calibration_blob_len,
+                              uint8_t *scratch, size_t scratch_len);
+
+size_t mmis_build_cmd_02_type2(mmis_capture_mode_t mode,
+                                const uint8_t *hardcoded_prog, size_t hardcoded_prog_len,
+                                uint16_t bytes_per_line, uint8_t calibration_frames, size_t lines_per_frame,
+                                uint8_t repeat_multiplier, uint8_t key_calibration_line,
+                                const uint8_t *factory_calibration_values, size_t factory_calibration_values_len,
+                                const uint8_t *factory_calib_data, size_t factory_calib_data_len,
+                                const uint8_t *calibration_blob, size_t calibration_blob_len,
+                                uint8_t *out, size_t out_max,
+                                uint8_t *scratch, size_t scratch_len);
+
+/* average() for the interleave <= 1 path: skip 2 frames, byte-wise mean of the
+ * remaining (calibration_frames - 2). Writes one frame (lines_per_frame *
+ * bytes_per_line bytes). */
+bool mmis_average_flat(const uint8_t *raw, size_t raw_len,
+                        size_t lines_per_frame, size_t bytes_per_line, size_t calibration_frames,
+                        uint8_t *out, size_t out_max, size_t *out_len);
+
+#endif /* MMIS_TIMESLOT_H */

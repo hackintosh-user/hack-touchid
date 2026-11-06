@@ -57,7 +57,7 @@ private let daemonMissingCategoryID = "com.vfs5011.hackintosh.daemon_missing"
 private let clientUpdateActionID = "com.vfs5011.hackintosh.update_client"
 private let clientUpdateCategoryID = "com.vfs5011.hackintosh.client_update"
 private let clientSymlinkPath = "/usr/local/bin/hack-touchid"
-private let clientRawVersionBaseURL = "https://raw.githubusercontent.com/hackintosh-user/VFS5011-hackintosh"
+private let clientRawVersionBaseURL = "https://raw.githubusercontent.com/hackintosh-user/hack-touchid"
 private let clientUpdateCheckInterval: TimeInterval = 60 * 60
 private let clientUpdateFirstCheckDelay: TimeInterval = 15
 // UserDefaults key: the last "version|build" we already notified about,
@@ -164,6 +164,14 @@ enum MacOSInfo {
 
     /// Darwin 25 == macOS 26 Tahoe. Uses the kernel's own report, so a
     /// spoofed product version does not fool the feature gate.
+    /// The Metallica agent creates this file while it runs on a macOS version where it offers
+    /// Touch to Lock (the touch sensor's version of Swipe to Lock). Beta: Sequoia and newer for now.
+    static var touchLockAvailable: Bool {
+        FileManager.default.fileExists(atPath: "/Library/Application Support/VFS5011/touch_lock_available")
+    }
+
+    static var lockFeatureName: String { touchLockAvailable ? "Touch to Lock" : "Swipe to Lock" }
+
     static var isTahoeOrNewer: Bool {
         guard let rel = sysctlString("kern.osrelease"),
               let major = Int(rel.split(separator: ".").first ?? "") else { return false }
@@ -383,11 +391,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         toggleItem.tag = 100 // used to find + relabel this item later
         menu.addItem(toggleItem)
 
-        // Swipe-to-lock is a macOS Tahoe feature, so the item only
-        // exists there.
-        if MacOSInfo.isTahoeOrNewer {
+        // Swipe-to-lock is a macOS Tahoe feature, so the item only exists there, except that the
+        // Metallica agent (Touch to Lock, beta) also offers it on Sequoia while it is running.
+        if MacOSInfo.isTahoeOrNewer || MacOSInfo.touchLockAvailable {
             let lockItem = NSMenuItem(
-                title: lockSwipeEnabled ? "Disable Swipe to Lock" : "Enable Swipe to Lock",
+                title: lockSwipeEnabled ? "Disable \(MacOSInfo.lockFeatureName)" : "Enable \(MacOSInfo.lockFeatureName)",
                 action: #selector(toggleLockSwipeTapped),
                 keyEquivalent: ""
             )
@@ -435,7 +443,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             : "Enable Fingerprint Authentication"
 
         if let lockItem = menu.item(withTag: 101) {
-            lockItem.title = lockSwipeEnabled ? "Disable Swipe to Lock" : "Enable Swipe to Lock"
+            lockItem.title = lockSwipeEnabled ? "Disable \(MacOSInfo.lockFeatureName)" : "Enable \(MacOSInfo.lockFeatureName)"
             lockItem.state = lockSwipeEnabled ? .on : .off
         }
 
@@ -508,7 +516,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         body.frame = NSRect(x: 24, y: 70, width: 312, height: 110)
         content.addSubview(body)
 
-        let link = NSTextField(labelWithString: "github.com/hackintosh-user/VFS5011-hackintosh")
+        let link = NSTextField(labelWithString: "github.com/hackintosh-user/hack-touchid")
         link.font = NSFont.systemFont(ofSize: 11)
         link.textColor = .linkColor
         link.alignment = .center
@@ -522,7 +530,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     @objc private func openProjectPage() {
-        if let url = URL(string: "https://github.com/hackintosh-user/VFS5011-hackintosh") {
+        if let url = URL(string: "https://github.com/hackintosh-user/hack-touchid") {
             NSWorkspace.shared.open(url)
         }
     }
@@ -794,6 +802,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         echo
         echo "Press Return to close this window."
         read
+        # Terminal.app only: close this window and quit Terminal if no other window is left.
+        # Runs detached so it fires after this shell has exited. Other terminal apps are left alone.
+        if [[ "$TERM_PROGRAM" == "Apple_Terminal" ]]; then
+            nohup /usr/bin/osascript -e 'delay 0.7' -e 'tell application "Terminal"' -e 'try' -e 'close (every window whose name contains "HTID-Update-Client")' -e 'end try' -e 'delay 0.3' -e 'if (count of windows) is 0 then quit' -e 'end tell' >/dev/null 2>&1 &!
+        fi
+        exit
         """
         let fileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("HTID-Update-Client.command")
         do {

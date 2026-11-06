@@ -57,6 +57,7 @@
 #include <mach-o/dyld.h>
 
 #include "vfs5011_proto.h"
+#include "vfs5011_led.h"
 #include "hack-touchid-matcher.h"
 #include "supported_sensors.h"
 #ifdef HT_NO_METALLICA
@@ -237,7 +238,9 @@ static int run_sequence(libusb_device_handle *handle, struct usb_action *seq, in
     for (i = 0; i < count; i++) {
         struct usb_action *a = &seq[i];
         if (a->type == ACTION_SEND) {
-            r = bulk_transfer_with_pipe_retry(handle, a->endpoint, a->data, a->size,
+            uint8_t led_scratch[VFS5011_LED_PKT_LEN]; /* saved LED brightness, see vfs5011_led.h */
+            const unsigned char *send_data = vfs5011_led_prepare_send(a->data, a->size, led_scratch);
+            r = bulk_transfer_with_pipe_retry(handle, a->endpoint, (unsigned char *)send_data, a->size,
                                                &transferred, VFS5011_DEFAULT_WAIT_TIMEOUT);
             if (r != 0 || transferred != a->size) {
                 if (!g_capture_quiet) fprintf(stderr, "SEND failed at step %d (%s): %s\n", i + 1, a->name, libusb_error_name(r));
@@ -299,6 +302,7 @@ static int cmpint(const void *a, const void *b) { return (*(const int *)a) - (*(
 static void median_filter(int *data, int size, int filtersize) {
     int *result = calloc(size, sizeof(int));
     int *sortbuf = calloc(filtersize, sizeof(int));
+    if (!result || !sortbuf) { free(result); free(sortbuf); return; }
     for (int i = 0; i < size; i++) {
         int i1 = i - (filtersize - 1) / 2, i2 = i + (filtersize - 1) / 2;
         if (i1 < 0) i1 = 0;
@@ -322,6 +326,7 @@ static unsigned char *assemble_lines(unsigned char *lines, int lines_len, int ma
     int line_stride = VFS5011_LINE_SIZE, width = VFS5011_IMAGE_WIDTH;
     int *offsets = calloc((size_t)(lines_len / 2), sizeof(int));
     unsigned char *output = calloc((size_t)width * max_height, 1);
+    if (!offsets || !output) { free(offsets); free(output); *out_height = 0; return NULL; }
     float y = 0.0f; int line_ind = 0;
     for (int i = 0; i < lines_len - 1; i += 2) {
         int bestmatch = i, bestdiff = 0;
@@ -459,7 +464,9 @@ static int is_upek_sensor(const hack_touchid_sensor_t *s) {
  * header comment -- so no extraction changes are needed, only the
  * width fed into it. */
 static int current_sensor_image_width(void) {
-    if (is_upek_sensor(g_detected_sensor)) return UPEK_IMG_WIDTH;
+    /* Runtime value: fixed 288 on bcdDevice 1 units, read from the sensor on bcdDevice 2 units
+     * (only known after a capture has run). */
+    if (is_upek_sensor(g_detected_sensor)) return upek_image_width();
     return VFS5011_IMAGE_WIDTH;
 }
 
@@ -1421,6 +1428,49 @@ static int read_hidden_line(char *buf, size_t buf_size) {
     return 0;
 }
 
+/* Login password status for the status screen. The templates volume is
+ * unmounted at rest, so this is not a live check: it is refreshed whenever
+ * the volume is mounted anyway (Deploy, Enroll, Verify, Settings) and the last
+ * known answer is kept in a small marker file (a plain 1 or 0, no secret) so
+ * the status line still says something right after the client starts.
+ * -1 = unknown. g_password_verified is 1 once this session has seen the volume. */
+#define PASSWORD_STATE_FILE "/usr/local/libexec/hack-touchid/password.state"
+static int g_password_state = -1;
+static int g_password_verified = 0;
+static int g_password_state_loaded = 0;
+static int g_password_state_written = -1;
+
+/* A password file counts as stored only when it is not empty. */
+static int password_file_stored(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && st.st_size > 0;
+}
+
+static void password_state_set(int stored) {
+    g_password_state = stored ? 1 : 0;
+    g_password_verified = 1;
+    g_password_state_loaded = 1;
+    if (g_password_state_written == g_password_state) return;
+    FILE *f = fopen(PASSWORD_STATE_FILE, "w");
+    if (f) {
+        fputs(g_password_state ? "1\n" : "0\n", f);
+        fclose(f);
+        chmod(PASSWORD_STATE_FILE, 0644);
+        g_password_state_written = g_password_state;
+    }
+}
+
+static void password_state_load(void) {
+    if (g_password_state_loaded) return;
+    g_password_state_loaded = 1;
+    FILE *f = fopen(PASSWORD_STATE_FILE, "r");
+    if (!f) return;
+    int c = fgetc(f);
+    fclose(f);
+    if (c == '1') { g_password_state = 1; g_password_state_written = 1; }
+    else if (c == '0') { g_password_state = 0; g_password_state_written = 0; }
+}
+
 /* Prompts for and stores the password the daemon auto-types on a
  * fingerprint match, directly onto the already-mounted HackTouchIDStore
  * volume at mount_path — same file, same permissions (root:wheel,
@@ -1436,7 +1486,8 @@ static int prompt_and_store_password(const char *mount_path, int only_if_missing
     char password_path[PATH_MAX];
     snprintf(password_path, sizeof(password_path), "%s/%s", mount_path, PASSWORD_FILENAME);
 
-    if (only_if_missing && access(password_path, F_OK) == 0) {
+    if (only_if_missing && password_file_stored(password_path)) {
+        password_state_set(1);
         return 0; /* already set — nothing to do */
     }
 
@@ -1478,6 +1529,7 @@ static int prompt_and_store_password(const char *mount_path, int only_if_missing
 
     memset(password, 0, sizeof(password));
     memset(confirm, 0, sizeof(confirm));
+    password_state_set(1);
     printf("Password stored.\n\n");
     return 0;
 }
@@ -1694,6 +1746,12 @@ static int mount_template_volume(char *out_path, size_t out_path_size) {
     }
     strncpy(out_path, last_line, out_path_size - 1);
     out_path[out_path_size - 1] = '\0';
+    {
+        /* The volume is open right now, so refresh the status line's answer. */
+        char pw_path[PATH_MAX];
+        snprintf(pw_path, sizeof(pw_path), "%s/%s", out_path, PASSWORD_FILENAME);
+        password_state_set(password_file_stored(pw_path));
+    }
     return 0;
 }
 
@@ -1994,6 +2052,19 @@ static void print_menu(void) {
     printf("  * Accessibility Grant  : %s%s%s\n",
            accessibility_ready ? VFSC_GREEN : VFSC_YELLOW,
            accessibility_ready ? "Granted" : "Not Detected", VFSC_RESET);
+    /* Not a live check either, same reasoning as Fingers below. */
+    password_state_load();
+    if (g_password_state < 0) {
+        printf("  * Login Password       : %sUnknown (run Deploy/Verify to check)%s\n", VFSC_DIM, VFSC_RESET);
+    } else if (g_password_state == 0) {
+        printf("  * Login Password       : %sNot stored%s%s (Settings [3] to add)%s\n",
+               VFSC_YELLOW, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+    } else if (g_password_verified) {
+        printf("  * Login Password       : %sStored%s\n", VFSC_GREEN, VFSC_RESET);
+    } else {
+        printf("  * Login Password       : %sStored%s%s (last check)%s\n",
+               VFSC_GREEN, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+    }
     /* Not a live check — see g_finger_count comment above. The
      * templates volume is unmounted at rest; run Enroll, Verify, or
      * Manage once this session to populate this. */
@@ -4593,6 +4664,7 @@ static void do_settings_clear_password_cache(void) {
     if (remove(password_path) != 0) {
         vfsc_err("Failed to clear password cache: %s\n\n", strerror(errno));
     } else {
+        password_state_set(0);
         printf("Password cache cleared.\n\n");
     }
     unmount_template_volume();
@@ -5418,6 +5490,112 @@ static void print_settings_group(const char *title) {
     printf("%s--------------------------------%s\n", VFSC_DIM, VFSC_RESET);
 }
 
+/* ------------------------------------------------------------------ *
+ * Settings [LED]: VFS5011 sensor light
+ *
+ * Writes the same conf files the daemon reads (see vfs5011_led.h), so a change
+ * applies on the next swipe with no daemon restart. Defaults are restored by
+ * deleting the files.
+ * ------------------------------------------------------------------ */
+static bool is_vfs5011_sensor(void) {
+    return g_detected_sensor && g_detected_sensor->family &&
+           strcmp(g_detected_sensor->family, "vfs5011") == 0;
+}
+
+static bool led_conf_write(const char *path, int value) {
+    system("mkdir -p /usr/local/libexec/hack-touchid");
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        vfsc_err("Failed to write %s: %s\n\n", path, strerror(errno));
+        return false;
+    }
+    fprintf(f, "%d\n", value);
+    fclose(f);
+    chmod(path, 0644);
+    return true;
+}
+
+/* Prompts for an integer in [lo, hi]. Returns the value, or -1 when cancelled. */
+static int led_prompt_int(const char *what, int lo, int hi) {
+    printf("%s (%d-%d), or press Enter to cancel: ", what, lo, hi);
+    fflush(stdout);
+    char line[32];
+    if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return -1; }
+    char *end = NULL;
+    long v = strtol(line, &end, 10);
+    if (end == line || v < lo || v > hi) {
+        printf("Cancelled.\n\n");
+        return -1;
+    }
+    return (int)v;
+}
+
+static void do_settings_led(void) {
+    char line[32];
+    for (;;) {
+        int bright = vfs5011_led_load_brightness();
+        int red = vfs5011_led_load_red_enabled();
+        int port = vfs5011_led_load_red_port();
+        int steady = vfs5011_led_load_idle_steady();
+
+        printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+        printf("%s                           SENSOR LED SETTINGS%s\n", VFSC_BCYAN, VFSC_RESET);
+        printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+        printf("%s[1]%s Brightness (current: %d%%)\n", VFSC_BOLD, VFSC_RESET, bright);
+        printf("%s[2]%s Red light on a wrong finger (current: %s)\n", VFSC_BOLD, VFSC_RESET, red ? "ON" : "OFF");
+        printf("%s[3]%s Red LED port (current: %d, default %d)\n", VFSC_BOLD, VFSC_RESET, port, VFS5011_LED_PORT_ATTENTION);
+        printf("%s[4]%s Steady ready light (current: %s, OFF is the driver blink)\n", VFSC_BOLD, VFSC_RESET, steady ? "ON" : "OFF");
+        printf("%s[R]%s Reset all to defaults\n", VFSC_BOLD, VFSC_RESET);
+        printf("%s[B]%s Back\n", VFSC_BOLD, VFSC_RESET);
+        printf("%s%s%s\n\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+        printf("%s<LED Settings>%s ", VFSC_BOLD, VFSC_RESET);
+        fflush(stdout);
+
+        if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return; }
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' || line[len-1] == ' ')) line[--len] = '\0';
+        if (len == 0) continue;
+        printf("\n");
+
+        switch (line[0]) {
+            case '1': {
+                printf("0 turns the sensor light off. Red is skipped too when brightness is 0.\n");
+                int v = led_prompt_int("Brightness", 0, 100);
+                if (v >= 0 && led_conf_write(VFS5011_LED_BRIGHTNESS_CONF, v))
+                    vfsc_ok("Brightness set to %d%%. Applies on the next swipe.\n\n", v);
+                break;
+            }
+            case '2':
+                if (led_conf_write(VFS5011_LED_RED_CONF, red ? 0 : 1))
+                    vfsc_ok("Red light on a wrong finger is now %s. Applies on the next swipe.\n\n", red ? "OFF" : "ON");
+                break;
+            case '3': {
+                printf("Port 2 is the red LED on the HP DV6. Change it only if your laptop shows\n");
+                printf("another color there.\n");
+                int v = led_prompt_int("Red LED port", 0, 3);
+                if (v >= 0 && led_conf_write(VFS5011_LED_RED_PORT_CONF, v))
+                    vfsc_ok("Red LED port set to %d. Applies on the next swipe.\n\n", v);
+                break;
+            }
+            case '4':
+                if (led_conf_write(VFS5011_LED_IDLE_STEADY_CONF, steady ? 0 : 1))
+                    vfsc_ok("Steady ready light is now %s. Applies on the next swipe.\n\n", steady ? "OFF" : "ON");
+                break;
+            case 'R': case 'r':
+                unlink(VFS5011_LED_BRIGHTNESS_CONF);
+                unlink(VFS5011_LED_RED_CONF);
+                unlink(VFS5011_LED_RED_PORT_CONF);
+                unlink(VFS5011_LED_IDLE_STEADY_CONF);
+                vfsc_ok("LED settings reset to defaults. Applies on the next swipe.\n\n");
+                break;
+            case 'B': case 'b':
+                return;
+            default:
+                vfsc_err("Unrecognized option '%s'. Choose 1-4, R or B.\n\n", line);
+        }
+    }
+}
+
 /* The options are grouped by purpose. The keys did not change, only the
  * order and the headings, so the dispatch in do_settings_menu() is the
  * same. */
@@ -5447,6 +5625,13 @@ static void print_settings_menu(void) {
     print_settings_group("SWIPE TO LOCK");
     printf("%s[L]%s Swipe to Lock Sensitivity (current: %d rows)\n", VFSC_BOLD, VFSC_RESET, read_lockswipe_min_height());
     printf("\n");
+
+    if (is_vfs5011_sensor()) {
+        print_settings_group("SENSOR LED");
+        printf("%s[LED]%s Sensor LED Settings (brightness: %d%%, red on wrong finger: %s)\n", VFSC_BOLD, VFSC_RESET,
+               vfs5011_led_load_brightness(), vfs5011_led_load_red_enabled() ? "ON" : "OFF");
+        printf("\n");
+    }
 
     print_settings_group("UPDATES & NOTIFICATIONS");
     printf("%s[7]%s Toggle Beta Updates (current: %s)\n", VFSC_BOLD, VFSC_RESET,
@@ -5494,6 +5679,12 @@ static void do_settings_menu(void) {
             do_settings_recent_commits();
             continue;
         }
+        if ((line[0] == 'L' || line[0] == 'l') && (line[1] == 'E' || line[1] == 'e') &&
+            (line[2] == 'D' || line[2] == 'd') && line[3] == '\0') {
+            if (is_vfs5011_sensor()) do_settings_led();
+            else vfsc_err("Sensor LED settings only apply to a VFS5011 sensor.\n\n");
+            continue;
+        }
         switch (cmd) {
             case '1': do_settings_delete_fingers(); break;
             case '2': do_settings_clear_password_cache(); break;
@@ -5508,7 +5699,7 @@ static void do_settings_menu(void) {
             case 'L': case 'l': do_settings_lockswipe_sensitivity(); break;
             case 'B': case 'b': return;
             default:
-                vfsc_err("Unrecognized option '%s'. Choose 1-9, L, U, CU, CM or B.\n\n", line);
+                vfsc_err("Unrecognized option '%s'. Choose 1-9, L, U, CU, CM, LED or B.\n\n", line);
         }
     }
 }
@@ -5660,15 +5851,33 @@ static bool offer_pane_instead_of_cli(void) {
  *   2. if there is none, it is compiled with build_prefpane.sh as the console user, with a
  *      time limit (the updater once hung for good inside that swiftc step);
  *   3. it is copied to ~/Library/PreferencePanes when it is missing or its version differs.
+ * Freshness: build_prefpane.sh stamps HTIDPaneSourceHash (a hash of the Swift source and the plist template) and HTIDPaneBuildDate into the bundle. The client recomputes the hash with
+ * "build_prefpane.sh --source-hash": a built bundle whose stamp differs (or is missing) is rebuilt, and an
+ * installed pane whose stamp differs from the bundle is reinstalled.
  * Any failure prints one line and the client carries on with the CLI. --cli skips all of this. */
 #define PANE_BUILD_LIMIT_SECONDS 240
 #define PANE_BUILD_LOG "/tmp/htid-pane-build.log"
 
-static bool pane_bundle_version(const char *bundle, char *out, size_t cap) {
-    char cmd[PATH_MAX + 160];
+static bool pane_bundle_key(const char *bundle, const char *key, char *out, size_t cap) {
+    char cmd[PATH_MAX + 200];
     snprintf(cmd, sizeof(cmd),
-             "/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \"%s/Contents/Info.plist\" 2>/dev/null",
-             bundle);
+             "/usr/libexec/PlistBuddy -c 'Print :%s' \"%s/Contents/Info.plist\" 2>/dev/null", key, bundle);
+    out[0] = '\0';
+    FILE *p = popen(cmd, "r");
+    if (!p) return false;
+    if (!fgets(out, (int)cap, p)) out[0] = '\0';
+    pclose(p);
+    out[strcspn(out, "\r\n")] = '\0';
+    return out[0] != '\0';
+}
+
+/* Fingerprint of the pane's current source (the build script prints it, so the client and the
+ * build can never disagree about how it is computed). */
+static bool pane_source_hash(char *out, size_t cap) {
+    char script[PATH_MAX], cmd[PATH_MAX + 64];
+    snprintf(script, sizeof(script), "%s/shared/pane/source/build_prefpane.sh", g_exec_dir);
+    if (access(script, R_OK) != 0) return false;
+    snprintf(cmd, sizeof(cmd), "/bin/bash \"%s\" --source-hash 2>/dev/null", script);
     out[0] = '\0';
     FILE *p = popen(cmd, "r");
     if (!p) return false;
@@ -5744,17 +5953,46 @@ static void ensure_pane_installed(void) {
     bool have_bundle = pane_bundle_path(src, sizeof(src));
     bool installed = installed_pane_path(inst, sizeof(inst), &ipw);
 
-    if (installed && !have_bundle) return;
-    if (installed && have_bundle) {
-        char vsrc[64], vinst[64];
-        /* Same version, or a version that cannot be read: leave the installed pane alone. */
-        if (!pane_bundle_version(src, vsrc, sizeof(vsrc)) ||
-            !pane_bundle_version(inst, vinst, sizeof(vinst)) || strcmp(vsrc, vinst) == 0) return;
-        printf("%sThe preference pane is out of date (%s, latest %s). Updating it...%s\n",
-               VFSC_CYAN, vinst, vsrc, VFSC_RESET);
+    /* 1. Is the built bundle current? Its stamped source hash must match the source on disk.
+     * A bundle without the stamp (built before this check existed) counts as out of date. */
+    char want[80] = "", built[80] = "", builtdate[40] = "";
+    bool can_hash = pane_source_hash(want, sizeof(want));
+    bool stale = false;
+    if (have_bundle && can_hash)
+        stale = !pane_bundle_key(src, "HTIDPaneSourceHash", built, sizeof(built)) || strcmp(built, want) != 0;
+    if (installed && !have_bundle && can_hash) {
+        char ih[80];
+        stale = !pane_bundle_key(inst, "HTIDPaneSourceHash", ih, sizeof(ih)) || strcmp(ih, want) != 0;
+        if (!stale) return; /* nothing built, but the installed pane is current */
     }
-    if (!have_bundle) {
-        if (!build_pane_with_time_limit(pw) || !pane_bundle_path(src, sizeof(src))) return;
+    if (!have_bundle || stale) {
+        if (have_bundle) {
+            (void)pane_bundle_key(src, "HTIDPaneBuildDate", builtdate, sizeof(builtdate));
+            printf("%sThe preference pane build is out of date (built %s, the source has changed). Rebuilding...%s\n",
+                   VFSC_CYAN, builtdate[0] ? builtdate : "before build stamps existed", VFSC_RESET);
+        }
+        bool ok = build_pane_with_time_limit(pw) && pane_bundle_path(src, sizeof(src));
+        if (!ok) {
+            if (!have_bundle) return;
+            vfsc_warn("Could not rebuild the preference pane, using the existing build.\n\n");
+        }
+    }
+
+    /* 2. Is the installed pane the same build as the bundle? */
+    if (installed) {
+        char bh[80] = "", ih[80] = "";
+        bool b_has = pane_bundle_key(src, "HTIDPaneSourceHash", bh, sizeof(bh));
+        bool i_has = pane_bundle_key(inst, "HTIDPaneSourceHash", ih, sizeof(ih));
+        if (b_has && i_has && strcmp(bh, ih) == 0) return;
+        if (!b_has) { /* an old bundle with no stamp: fall back to the version number */
+            char bv[64] = "", iv[64] = "";
+            if (!pane_bundle_key(src, "CFBundleVersion", bv, sizeof(bv)) ||
+                !pane_bundle_key(inst, "CFBundleVersion", iv, sizeof(iv)) || strcmp(bv, iv) == 0) return;
+        }
+        char bd[40] = "";
+        (void)pane_bundle_key(src, "HTIDPaneBuildDate", bd, sizeof(bd));
+        printf("%sThe installed preference pane is out of date. Updating it%s%s%s...%s\n", VFSC_CYAN,
+               bd[0] ? " to the build of " : "", bd, "", VFSC_RESET);
     }
     (void)do_install_pane();
 }
@@ -5875,10 +6113,18 @@ static bool do_deploy(void) {
     if (mount_template_volume(mount_path, sizeof(mount_path)) == 0) {
         char password_path[PATH_MAX];
         snprintf(password_path, sizeof(password_path), "%s/%s", mount_path, PASSWORD_FILENAME);
-        if (access(password_path, F_OK) != 0) {
-            prompt_and_store_password(mount_path, /*only_if_missing=*/1);
+        if (!password_file_stored(password_path)) {
+            if (prompt_and_store_password(mount_path, /*only_if_missing=*/1) != 0) {
+                vfsc_warn("No login password is stored yet, so a fingerprint match will not type anything.\n"
+                          "Add it with Settings [3] Set/Update Auto-Type Password.\n\n");
+            }
+        } else {
+            vfsc_ok("Login password: Stored.\n\n");
         }
         unmount_template_volume();
+    } else {
+        vfsc_warn("Could not check whether a login password is stored (template volume unavailable).\n"
+                  "Check it with Settings [3] Set/Update Auto-Type Password.\n\n");
     }
 
     /* Menu bar app: part of Deploy now. Non-fatal, a failure here never fails Deploy. */
@@ -5994,8 +6240,8 @@ static void check_macos_version_warning(void) {
  * subject to the REST API's per-hour rate limit, unlike the tags API
  * this used to hit. */
 
-#define UPDATE_REPO_URL "https://github.com/hackintosh-user/VFS5011-hackintosh"
-#define UPDATE_RAW_BASE_URL "https://raw.githubusercontent.com/hackintosh-user/VFS5011-hackintosh"
+#define UPDATE_REPO_URL "https://github.com/hackintosh-user/hack-touchid"
+#define UPDATE_RAW_BASE_URL "https://raw.githubusercontent.com/hackintosh-user/hack-touchid"
 
 /* Fetches <branch>'s VERSION.txt fresh from GitHub -- deliberately the
  * SAME branch the local copy says it's on (local.branch), so someone
@@ -6008,7 +6254,7 @@ static void check_macos_version_warning(void) {
 static bool fetch_remote_version_file(const char *branch, client_version_info_t *out) {
     char cmd[256];
     snprintf(cmd, sizeof(cmd),
-             "curl -fsS -m 3 '%s/%s/%s' 2>/dev/null",
+             "curl -fsSL -m 3 '%s/%s/%s' 2>/dev/null",
              UPDATE_RAW_BASE_URL, branch, VERSION_FILE_NAME);
 
     FILE *fp = popen(cmd, "r");
@@ -6274,11 +6520,19 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
      * pre-compiled in the branch and the copy below installs it, so the
      * updater must not wait on a swiftc build after "Build complete"
      * (it sat at 100% for minutes on older Macs). */
+    /* Oct 24: when no sensor family is known, do NOT pass "--sensor all". An explicit "all" builds
+     * every family and fails on Homebrew packages the machine never needed (openssl@3 and
+     * innoextract belong to Metallica only). Without --sensor, prep_and_build.sh auto-detects, and
+     * when it detects nothing it builds all families but skips the ones whose packages are missing. */
+    /* build_family only drives the progress steps below ("all" when unknown). */
     const char *build_family = (g_detected_sensor && g_detected_sensor->family)
                                    ? g_detected_sensor->family : "all";
+    char sensor_arg[96] = "";
+    if (g_detected_sensor && g_detected_sensor->family)
+        snprintf(sensor_arg, sizeof(sensor_arg), "--sensor %s ", g_detected_sensor->family);
     snprintf(cmd, sizeof(cmd),
-             "cd \"%s\" && chmod +x *.sh && sh prep_and_build.sh --sensor %s --yes --no-install --no-pane 2>&1 </dev/null",
-             src_dir, build_family);
+             "cd \"%s\" && chmod +x *.sh && sh prep_and_build.sh %s--yes --no-install --no-pane 2>&1 </dev/null",
+             src_dir, sensor_arg);
     FILE *bp = popen(cmd, "r");
     if (!bp) {
         fclose(log_fp);

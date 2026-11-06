@@ -12,10 +12,9 @@
   
   * Current version: ```v1.1.0```
   * Current Menubar app version: ```v1.4.1```
-  * If you want to see the changes that happen to the code, please head into the Change log with [This link](https://github.com/hackintosh-user/VFS5011-hackintosh/blob/active-development/CHANGELOG.md)
-  * Please refrence the Table that has the Supported sensors to make sure you can use this tool. [This link should take you there](https://github.com/hackintosh-user/VFS5011-hackintosh/tree/active-development#supported-sensors)
-  * Current Set ETA: **Mid October 2026**: Please keep in mind that this is only an ETA and not confirmed release date. Stuff could happen, it could release earlier or later on!
-  * [link to the GitHub page](https://hackintosh-user.github.io/VFS5011-hackintosh/index.html)
+  * If you want to see the changes that happen to the code, please head into the Change log with [This link](https://github.com/hackintosh-user/hack-touchid/blob/main/CHANGELOG.md)
+  * Please refrence the Table that has the Supported sensors to make sure you can use this tool. [This link should take you there](https://github.com/hackintosh-user/hack-touchid/tree/main#supported-sensors)
+  * [link to the GitHub page](https://hackintosh-user.github.io/hack-touchid/index.html)
 </p>
 
 ---
@@ -38,17 +37,16 @@ into the prompt automatically.
 ## Supported Sensors
 
 This Table will have the currently Supported Sensors or sensors in **Development** or **Planned Support**. Please keep your expectations in check, this is a hobby project.
-| Sensor Name / Model    | VID  | PID  | Support status                                                    | Supported Features |
-|------------------------|------|------|------------------------------------------------------------------ |--------------------|
-| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex with VFS5011**    | **Fully Supported**| 
-| Synaptics Metallica MIS| 006cb| 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt)** |                    |
-| Prometheus 97          | 138A | 0097 | **Developing & planned testing**                                  |                    |
-| Prometheus 9d          | 138A | 009d | **Developing / Supposed to work according to python-validty**     |                    |
-| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing**                                 |                    | 
-| Validity VFS101        | 138A | 0001 | **Planned / only plans until i get access to the device**         |                    | 
+| Sensor Name / Model    | VID  | PID  | Support status                                                                | Supported Features               |
+|------------------------|------|------|-------------------------------------------------------------------------------|----------------------------------|
+| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (Thanks Hackintosh-user)**    | **Fully Supported**              | 
+| Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt)**             | **Fully Supported**              |
+| Prometheus 97          | 138A | 0097 | **Developing & actively testing (Thanks u/p0cketl1nt)**                       | **Unfinshed**                    | 
+| Prometheus 9d          | 138A | 009d | **Developing / Supposed to work according to python-validity**                | **according to python-validity** |
+| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing**                                             | **Unfinshed**                    | 
 
  * Please Keep in Mind that some sensor names are **too long to fit in the table** the VID:PID for each currently or planned sensor will be in the table and regardless the client itself checks if your sensor is supported.
- * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesnt work.
+ * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesn't work.
 ## Features
 
 Please Keep in mind some features for other sensors may be **broken** or **buggy** this project isnt maintained by a **full Dev-Ops team.** So i would love if you encounter any issues to Open a **Github Issue** with as much information provided in the issue so i can work on the fix. Thanks! :)
@@ -76,7 +74,7 @@ Features with Hackintosh Touch-ID:
 -  Auto Updating Client that auto extracts, runs chmod, re-launches new update, and deletes the old files
 - [D] Diagnose option for debugging issues, and opening issues on github
 - Multi operating system (macOS) support on one APFS encrypted volume
-- Multiple Launch-arguments for easier access like --q or --diag-pid, there's more [Read about them here](https://github.com/hackintosh-user/VFS5011-hackintosh/blob/active-development/README.md#launch-arguments)
+- Multiple Launch-arguments for easier access like --q or --diag-pid, there's more [Read about them here](https://github.com/hackintosh-user/hack-touchid/blob/main/README.md#launch-arguments)
 - **macOS Tahoe only**: Swipe to lock with the menubar app!
 
  
@@ -132,7 +130,7 @@ The menu bar app talks to the daemon over macOS distributed
 notifications — the same mechanism the daemon already uses for its own
 `screenIsLocked`/`screenIsUnlocked` handling. **The daemon needs a small
 patch to actually send those events**; see
-[it's own README](https://github.com/hackintosh-user/VFS5011-hackintosh/blob/active-development/Hackintosh-TouchID-Menubar/daemon-patch/README.md)
+[it's own README](https://github.com/hackintosh-user/hack-touchid/blob/main/Hackintosh-TouchID-Menubar/daemon-patch/README.md)
 
 for the exact 6-line diff against `vfs5011_daemon.c`. Without the patch,
 the app runs standalone and just never receives anything — harmless, but
@@ -164,8 +162,8 @@ Known limitations:
 ## Building
 
 ```bash
-git clone https://github.com/hackintosh-user/VFS5011-hackintosh.git
-cd /path/to/vfs5011-hackintosh-active-development
+git clone https://github.com/hackintosh-user/hack-touchid.git
+cd hack-touchid
 chmod +x prep_and_build.sh
 ./prep_and_build.sh                    # detects your sensor over USB
 ./prep_and_build.sh --sensor vfs5011   # or name it: vfs5011, upek, metallica, or a VID:PID
@@ -226,7 +224,7 @@ sudo ./hack-touchid
 ```bash
 sudo hack-touchid
 ```
-or with its [launch-arguments!](https://github.com/hackintosh-user/VFS5011-hackintosh/blob/active-development/README.md#launch-arguments)
+or with its [launch-arguments!](https://github.com/hackintosh-user/hack-touchid/blob/main/README.md#launch-arguments)
 
 Then, you should be greeted with this **interactive CLI menu for Hackintosh Touch-ID client**
 ```
@@ -271,6 +269,8 @@ password automatically.
 
 **NOTICE** This list is set to change accordingly, there will be new launch-arguments which I will Mention in the Changelog!! Always keep up to date about these launch-args as they could heavily benefit your use-case.
 
+* ```-h```, ```--help```: Shows the list of launch arguments and exits. Needs no password. The same list is shown by `[H]` in the menu.
+* ```-v```, ```--version```: Shows the client version, build, branch and the installed daemon, FPOV and Fpbootd versions, then exits. Needs no password.
 * ```--q```: launches the Client without presenting the Verbose boot / launch
 * ```--quiet```: same like the one before, launches the client without presenting the Verbose logs.
 * ```--deploy-agent```: Runs the [3] Deploy authentication services without entering the client. This is also used when the Menubar detects the Daemon isn't installed / after a macOS update
@@ -278,11 +278,22 @@ password automatically.
 * ```--check-updates```: checks for updates without launching the client. If there is one, shows the [A] Show changelog / [Y] Download and install / [N] Cancel prompt.
 * ```--menu-updater```: checks for updates and installs one right away, with no prompts. The menu bar app's "Update Client" notification button runs this in a terminal.
 * ```--debug```: Makes the client print every log for better debugging.
+* ```--debug-full```: Same as `--debug`, but never truncates large payloads.
 * ```--list-records```: Read-only. Lists the storage, users and enrolled fingers stored on the sensor, plus database size and free space.
 * ```--wipe-records```: Deletes all enrolled prints stored on the sensor. Destructive, cannot be undone.
+* ```--enroll-test```: Metallica MIS only. Calibrates, enrolls one finger on the sensor and exits. Tester tool, run it together with `--debug`.
+* ```--verify-test```: Metallica MIS only. Calibrates, asks for one touch, matches it against the print saved by `--enroll-test` and exits. Run it together with `--debug`.
 * ```--force-pair```: Experimental. Tries to pair the sensor by writing its identity partitions. A sensor that is already paired refuses this (error `0x0404`), so use the two host flags below instead.
 * ```--host-product "<name>"```: Overrides the product name HTID uses to derive the pairing key. Use the laptop's real value, not the spoofed Mac one. Use together with `--host-serial`. Applies to this run only, nothing is saved.
 * ```--host-serial "<serial>"```: Overrides the serial HTID uses to derive the pairing key. Use the laptop's real value. Use together with `--host-product`. Applies to this run only, nothing is saved. 
+* ```--cli```: Skips the preference pane question and starts the CLI client.
+* ```--pane```: Opens the installed preference pane instead of the CLI client.
+* ```--list-fingers```: Prints the enrolled prints as JSON and exits. Used by the Settings pane.
+* ```--rename-finger```: Used with `--finger-id <ID> --finger-name "<name>"`. Renames a print and exits.
+* ```--delete-finger```: Used with `--finger-id <ID>`. Removes a print and exits. Not available on Metallica MIS.
+* ```--mmis-connect```: Metallica MIS only. Opens a session with the sensor and reports the result. Used by the Settings pane.
+* ```--mmis-calibrate```: Metallica MIS only. Runs the calibration and reports the result. Used by the Settings pane.
+* ```--fpbootd-daemon```: Runs the client as the Fpbootd pre-login socket server. Started by the Fpbootd install, you should not need to run it yourself.
 
 ## How it works
 
@@ -359,11 +370,11 @@ driver exists.
 
 * @Hackintosh-user: Main Lead developer
 * @ilikehackintosh: Documentation handler
-* [u/p0cketl1nt](https://www.reddit.com/user/p0cketl1nt/): Main tester for Metallica MIS 006cb:009a & Prometheus 97 138a:0097 (massive thank you!)
+* [u/p0cketl1nt](https://www.reddit.com/user/p0cketl1nt/): Main tester for Metallica MIS 06cb:009a & Prometheus 97 138a:0097 (massive thank you!)
 * [u/dCold_Salamander7764](https://www.reddit.com/user/Cold_Salamander7764/): Main tester for UPEK touch-Strip 147e:2016 (massive thank you!)
 
 ## License
 
-Released under the BSD 3-Clause License. See [LICENSE](https://github.com/hackintosh-user/VFS5011-hackintosh/tree/active-development?tab=License-1-ov-file) for
+Released under the BSD 3-Clause License. See [LICENSE](https://github.com/hackintosh-user/hack-touchid/tree/main?tab=License-1-ov-file) for
 the full text, including third-party attribution for NBIS and the
 VFS5011 capture protocol.

@@ -40,12 +40,12 @@ private enum Paths {
 }
 
 private enum Links {
-    static let website = "https://hackintosh-user.github.io/VFS5011-hackintosh/"
-    static let repo = "https://github.com/hackintosh-user/VFS5011-hackintosh"
-    static let releases = "https://github.com/hackintosh-user/VFS5011-hackintosh/releases"
-    static let issues = "https://github.com/hackintosh-user/VFS5011-hackintosh/issues"
-    static let rawBase = "https://raw.githubusercontent.com/hackintosh-user/VFS5011-hackintosh"
-    static let releasesAPI = "https://api.github.com/repos/hackintosh-user/VFS5011-hackintosh/releases?per_page=30"
+    static let website = "https://hackintosh-user.github.io/hack-touchid/"
+    static let repo = "https://github.com/hackintosh-user/hack-touchid"
+    static let releases = "https://github.com/hackintosh-user/hack-touchid/releases"
+    static let issues = "https://github.com/hackintosh-user/hack-touchid/issues"
+    static let rawBase = "https://raw.githubusercontent.com/hackintosh-user/hack-touchid"
+    static let releasesAPI = "https://api.github.com/repos/hackintosh-user/hack-touchid/releases?per_page=30"
 }
 
 private let thresholdChoices = [20, 25, 30, 35, 40]
@@ -242,6 +242,12 @@ private func label(_ text: String, bold: Bool = false, secondary: Bool = false) 
 
 private func macOSMajor() -> Int { ProcessInfo.processInfo.operatingSystemVersion.majorVersion }
 
+/// The Metallica agent creates this file while it runs on a macOS version where it offers Touch to
+/// Lock (the touch sensor's version of Swipe to Lock). Beta: Sequoia and newer for now.
+private func touchLockAvailable() -> Bool {
+    FileManager.default.fileExists(atPath: "/Library/Application Support/VFS5011/touch_lock_available")
+}
+
 // MARK: - The pane
 
 @objc(HackTouchIDPane)
@@ -253,6 +259,7 @@ class HackTouchIDPane: NSPreferencePane {
     private let daemonValue = label("")
     private let clientValue = label("")
     private let menubarValue = label("")
+    private let sensorValue = label("")
     private let thresholdPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let thresholdHint = label("", secondary: true)
     private let lockSwipeSwitch = NSSwitch()
@@ -305,10 +312,61 @@ class HackTouchIDPane: NSPreferencePane {
     private let sensorCalibrateButton = NSButton(title: "Calibrate", target: nil, action: nil)
     private let sensorDetailsButton = NSButton(title: "Details", target: nil, action: nil)
 
+    // Tabs actually offered in the segmented control (Sensor only when needed)
+    private var tabPages: [NSView?] = []
+    private var updatesTabIndex = -1
+
     private var refreshTimer: Timer?
     private var observers: [NSObjectProtocol] = []
 
     // MARK: Lifecycle
+
+    /// Sensors served by the Metallica backend (the ones the Sensor tab is for).
+    private static let sensorTabIDs: Set<String> = ["06cb:009a", "138a:0097", "138a:009d"]
+
+    /// Known sensors, mirroring shared/sen/supported_sensors.h: id -> (name, backend works).
+    private static let knownSensors: [String: (name: String, supported: Bool)] = [
+        "138a:0018": ("Validity VFS5011", true),
+        "147e:2016": ("UPEK/AuthenTec TouchStrip", false),
+        "06cb:009a": ("Synaptics Metallica MIS", true),
+        "138a:0097": ("Synaptics Prometheus", false),
+        "138a:009d": ("Synaptics Metallica MIS", false),
+    ]
+
+    /// Every "vvvv:pppp" id on the USB bus, read once through ioreg.
+    private func scanUSBIDs() -> [String] {
+        let (status, out) = run("/usr/sbin/ioreg", ["-p", "IOUSB", "-l", "-w0"])
+        if status != 0 { return [] }
+        var ids: [String] = []
+        var vendor: Int?
+        var product: Int?
+        func flush() {
+            if let v = vendor, let p = product { ids.append(String(format: "%04x:%04x", v, p)) }
+            vendor = nil; product = nil
+        }
+        func number(_ line: Substring, _ key: String) -> Int? {
+            guard let r = line.range(of: "\"\(key)\" = ") else { return nil }
+            let digits = line[r.upperBound...].prefix(while: { $0.isNumber })
+            return Int(digits)
+        }
+        for line in out.split(separator: "\n") {
+            if line.contains("+-o ") { flush() }
+            if let v = number(line, "idVendor") { vendor = v }
+            if let p = number(line, "idProduct") { product = p }
+        }
+        flush()
+        return ids
+    }
+
+    /// Text for the General tab's Sensor row, built from the ids found at load.
+    private func sensorSummary(_ ids: [String]) -> String {
+        let found = ids.filter { Self.knownSensors[$0] != nil }
+        if found.isEmpty { return "No supported sensor found" }
+        return found.map { id -> String in
+            let k = Self.knownSensors[id]!
+            return "\(k.name) (\(id))" + (k.supported ? "" : ", not yet supported")
+        }.joined(separator: "\n")
+    }
 
     override func loadMainView() -> NSView {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 668, height: 640))
@@ -329,7 +387,14 @@ class HackTouchIDPane: NSPreferencePane {
 
         page.addArrangedSubview(buildHeader())
 
-        let seg = NSSegmentedControl(labels: ["General", "Fingerprints", "Sensor", "Updates", "About"], trackingMode: .selectOne,
+        let usbIDs = scanUSBIDs()
+        let showSensor = usbIDs.contains { Self.sensorTabIDs.contains($0) }
+        sensorValue.stringValue = sensorSummary(usbIDs)
+        var labels = ["General", "Fingerprints"]
+        if showSensor { labels.append("Sensor") }
+        updatesTabIndex = labels.count
+        labels += ["Updates", "About"]
+        let seg = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
                                      target: self, action: #selector(pageChanged(_:)))
         seg.selectedSegment = 0
         page.addArrangedSubview(seg)
@@ -353,6 +418,8 @@ class HackTouchIDPane: NSPreferencePane {
         sensorPage = sensorView
         updatesPage = updatesView
         aboutPage = about
+        tabPages = showSensor ? [general, fingersView, sensorView, updatesView, about]
+                              : [general, fingersView, updatesView, about]
 
         self.mainView = root
         mainViewDidLoad()
@@ -360,9 +427,8 @@ class HackTouchIDPane: NSPreferencePane {
     }
 
     @objc private func pageChanged(_ sender: NSSegmentedControl) {
-        let pages = [generalPage, fingersPage, sensorPage, updatesPage, aboutPage]
-        for (i, p) in pages.enumerated() { p?.isHidden = i != sender.selectedSegment }
-        if sender.selectedSegment == 3 && !updatesChecked { checkForUpdates() }
+        for (i, p) in tabPages.enumerated() { p?.isHidden = i != sender.selectedSegment }
+        if sender.selectedSegment == updatesTabIndex && !updatesChecked { checkForUpdates() }
     }
 
     override func mainViewDidLoad() {
@@ -521,11 +587,12 @@ class HackTouchIDPane: NSPreferencePane {
         for v in thresholdChoices { thresholdPopup.addItem(withTitle: "\(v)") }
         thresholdPopup.target = self
         thresholdPopup.action = #selector(thresholdChanged)
-        for f in [daemonValue, clientValue, menubarValue] { f.alignment = .right }
+        for f in [daemonValue, clientValue, menubarValue, sensorValue] { f.alignment = .right }
         let statusGroup = group("Status", rows: [
             settingRow("Daemon", control: daemonValue),
             settingRow("Client", control: clientValue),
             settingRow("Menu bar app", control: menubarValue),
+            settingRow("Sensor", control: sensorValue),
         ])
         let thresholdGroup = group(nil, rows: [
             settingRow("Match threshold", subtitle: thresholdHint, control: thresholdPopup),
@@ -540,10 +607,11 @@ class HackTouchIDPane: NSPreferencePane {
 
         lockSwipeSwitch.target = self
         lockSwipeSwitch.action = #selector(lockSwipeChanged)
-        let tahoeGroup = group("macOS Tahoe", rows: [
-            settingRow("Swipe to Lock", subtitle: lockSwipeHint, control: lockSwipeSwitch),
+        let touchLock = touchLockAvailable()
+        let tahoeGroup = group(macOSMajor() >= 26 ? "macOS Tahoe" : "Lock (beta)", rows: [
+            settingRow(touchLock ? "Touch to Lock" : "Swipe to Lock", subtitle: lockSwipeHint, control: lockSwipeSwitch),
         ])
-        tahoeGroup.isHidden = macOSMajor() < 26
+        tahoeGroup.isHidden = macOSMajor() < 26 && !touchLock
         tahoeBox = tahoeGroup
 
         for g in [authGroup, statusGroup, thresholdGroup, actionsGroup, tahoeGroup] {
@@ -1163,6 +1231,12 @@ class HackTouchIDPane: NSPreferencePane {
         echo
         echo "Press Return to close this window."
         read
+        # Terminal.app only: close this window and quit Terminal if no other window is left.
+        # Runs detached so it fires after this shell has exited. Other terminal apps are left alone.
+        if [[ "$TERM_PROGRAM" == "Apple_Terminal" ]]; then
+            nohup /usr/bin/osascript -e 'delay 0.7' -e 'tell application "Terminal"' -e 'try' -e 'close (every window whose name contains "HTID-Update-Client")' -e 'end try' -e 'delay 0.3' -e 'if (count of windows) is 0 then quit' -e 'end tell' >/dev/null 2>&1 &!
+        fi
+        exit
         """
         let fileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("HTID-Update-Client.command")
         do {
@@ -1239,9 +1313,11 @@ class HackTouchIDPane: NSPreferencePane {
         thresholdHint.stringValue = "Lower accepts more swipes, higher is stricter. Default \(thresholdDefault)."
 
         // Tahoe section
-        tahoeBox?.isHidden = macOSMajor() < 26
+        tahoeBox?.isHidden = macOSMajor() < 26 && !touchLockAvailable()
         lockSwipeSwitch.state = fileExists(Paths.lockSwipeFlag) ? .on : .off
-        lockSwipeHint.stringValue = "Arm the sensor and lock the screen with a swipe (Control-Command-Q)."
+        lockSwipeHint.stringValue = touchLockAvailable()
+            ? "Touch the sensor with an enrolled finger to lock the screen (Control-Command-Q). Lift your finger right after unlocking."
+            : "Arm the sensor and lock the screen with a swipe (Control-Command-Q)."
     }
 
     private func currentThreshold() -> Int {
