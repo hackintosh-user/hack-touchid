@@ -464,7 +464,9 @@ static int is_upek_sensor(const hack_touchid_sensor_t *s) {
  * header comment -- so no extraction changes are needed, only the
  * width fed into it. */
 static int current_sensor_image_width(void) {
-    if (is_upek_sensor(g_detected_sensor)) return UPEK_IMG_WIDTH;
+    /* Runtime value: fixed 288 on bcdDevice 1 units, read from the sensor on bcdDevice 2 units
+     * (only known after a capture has run). */
+    if (is_upek_sensor(g_detected_sensor)) return upek_image_width();
     return VFS5011_IMAGE_WIDTH;
 }
 
