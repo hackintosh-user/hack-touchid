@@ -30,6 +30,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
@@ -838,6 +839,10 @@ static bool load_live_update_setting(void) {
  * single relaunched process's lifetime. */
 static bool g_post_update_mode = false;
 
+/* True during the boot checks of a post-update relaunch: the routine "[ OK ]" status lines are
+ * dropped so the update ends on one clean line. Failures and warnings print as usual. */
+static bool g_status_quiet = false;
+
 /* Set when the updater just removed the installed daemon (see
  * remove_daemon_for_update()). Carried across the post-update relaunch
  * with the internal "--daemon-removed" flag so the new process can repeat
@@ -871,6 +876,7 @@ static void vfsc_boot_line(const char *fmt, ...) {
  * as one continuous log instead of some lines having timestamps and
  * others not. */
 static void vfsc_status_line(const char *fmt, ...) {
+    if (g_status_quiet) return;
     if (g_verbose_boot) {
         g_boot_fake_time += 0.000037 + (double)(rand() % 419) / 1000000.0;
         printf("%s[%9.6f]%s ", VFSC_DIM, g_boot_fake_time, VFSC_RESET);
@@ -893,6 +899,7 @@ static void vfsc_status_line(const char *fmt, ...) {
  * pure-flavor flood/boot lines above -- this tag means "a real gate
  * just passed", not "here's some atmosphere". */
 static void vfsc_status_line_ok(const char *fmt, ...) {
+    if (g_status_quiet) return;
     if (g_verbose_boot) {
         g_boot_fake_time += 0.000037 + (double)(rand() % 419) / 1000000.0;
         printf("%s[%9.6f]%s ", VFSC_DIM, g_boot_fake_time, VFSC_RESET);
@@ -2595,8 +2602,11 @@ static void do_uninstall(void) {
  * (Deploy rewrites the rule, the log is useful to keep).
  * Needs no confirmation: the user already confirmed the update.
  * Returns true if a daemon was found and removed. */
+static void draw_progress_bar(int percent, const char *label);
+static void upbar_clear(void);
+
 static bool remove_daemon_for_update(void) {
-    printf("Checking for an installed daemon...\n");
+    draw_progress_bar(5, "Checking for an installed daemon");
 
     char installed[HACK_TOUCHID_SENSOR_COUNT][PATH_MAX];
     size_t n_installed = 0;
@@ -2630,9 +2640,10 @@ static bool remove_daemon_for_update(void) {
     bool agent_running = is_auth_service_deployed();
 
     if (n_installed == 0 && !plist_present && !agent_running) {
-        printf("No daemon installed, nothing to remove.\n");
+        draw_progress_bar(100, "No old daemon found");
         return false;
     }
+    draw_progress_bar(25, "Removing the old daemon");
 
     int problems = 0;      /* anything that didn't go cleanly */
     int file_problems = 0; /* a file that is still on disk */
@@ -2646,14 +2657,17 @@ static bool remove_daemon_for_update(void) {
                  (int)pw->pw_uid, AGENT_LABEL, (int)pw->pw_uid, plist_path);
         system(cmd);
         if (plist_present && unlink(plist_path) != 0) {
+            upbar_clear();
             vfsc_err("Couldn't remove %s: %s\n", plist_path, strerror(errno));
             problems++;
             file_problems++;
         }
     } else {
+        upbar_clear();
         vfsc_warn("Couldn't determine the console user; skipped LaunchAgent removal.\n");
         problems++;
     }
+    draw_progress_bar(55, "Removing the old daemon");
 
     /* 2. Delete the installed daemon binaries + their TCC rows. */
     for (size_t i = 0; i < n_installed; i++) {
@@ -2665,6 +2679,7 @@ static bool remove_daemon_for_update(void) {
             system(cmd);
         }
         if (unlink(installed[i]) != 0) {
+            upbar_clear();
             vfsc_err("Couldn't remove %s: %s\n", installed[i], strerror(errno));
             problems++;
             file_problems++;
@@ -2672,11 +2687,14 @@ static bool remove_daemon_for_update(void) {
     }
 
     if (problems == 0) {
-        printf("%sDaemon un-installed, Please run [3] Again.%s\n", VFSC_YELLOW, VFSC_RESET);
+        /* Quiet on success: the update summary (or the relaunched client) says "Daemon un-installed". */
+        draw_progress_bar(100, "Old daemon removed");
     } else if (file_problems > 0) {
+        upbar_clear();
         vfsc_warn("Daemon removal had %d problem(s), see above. Delete the files "
                   "listed above manually, then run sudo hack-touchid and press [3].\n", problems);
     } else {
+        upbar_clear();
         vfsc_warn("The daemon file was removed, but the LaunchAgent could not be unregistered. "
                   "Press [3] to redeploy, or [X] Uninstall first if the old daemon still runs.\n");
     }
@@ -6275,19 +6293,32 @@ static bool fetch_remote_version_file(const char *branch, client_version_info_t 
     return parse_version_file(buf, out);
 }
 
-/* draw_progress_bar() -- redraws a single-line "label [####    ] NN%"
- * bar in place via \r. Never prints a trailing \n itself (so repeated
- * calls overwrite cleanly) -- the caller prints one \n once the
- * operation this bar tracks has actually finished. */
+/* The updater's single progress bar. One line, redrawn in place via \r. The label changes with
+ * the phase (Downloading, Extracting, Building, Installing, removing the old daemon,
+ * re-deploying) and the bar refills from 0 for each phase, so the whole update is one line instead
+ * of five. upbar_clear() wipes the line before anything else prints (a changelog, a warning, the
+ * final message), and the next draw_progress_bar() puts the bar back on a fresh line. */
+static bool g_upbar_on = false;
+
+static void upbar_clear(void) {
+    if (!g_upbar_on) return;
+    printf("\r\033[K");
+    fflush(stdout);
+    g_upbar_on = false;
+}
+
 static void draw_progress_bar(int percent, const char *label) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     const int width = 30;
     int filled = (percent * width) / 100;
-    printf("\r%s [", label);
-    for (int i = 0; i < width; i++) putchar(i < filled ? '#' : ' ');
-    printf("] %3d%%", percent);
+    printf("\r\033[K%s [%s", label, VFSC_BGREEN);
+    for (int i = 0; i < filled; i++) fputs("\xE2\x96\x88", stdout);          /* full block */
+    printf("%s%s", VFSC_RESET, VFSC_DIM);
+    for (int i = filled; i < width; i++) fputs("\xE2\x96\x91", stdout);      /* light shade */
+    printf("%s] %3d%%", VFSC_RESET, percent);
     fflush(stdout);
+    g_upbar_on = true;
 }
 
 /* draw_enroll_bar() -- same single-line-redraw-via-\r technique as
@@ -6321,7 +6352,7 @@ static void draw_enroll_bar(int good, int total, const char *status, const char 
  * spinner+hashmark meter instead of a clean single-line bar -- not
  * reliable enough to depend on. This avoids curl's renderer entirely.
  * Returns true iff curl exited 0. */
-static bool download_with_progress(const char *url, const char *out_path) {
+static bool download_with_progress(const char *url, const char *out_path, const char *label) {
     long total_size = -1;
     {
         char cmd[1024];
@@ -6356,7 +6387,7 @@ static bool download_with_progress(const char *url, const char *out_path) {
         _exit(127); /* only reached if execlp() itself failed */
     }
 
-    draw_progress_bar(0, "Downloading");
+    draw_progress_bar(0, label);
     int status = 0;
     for (;;) {
         pid_t r = waitpid(pid, &status, WNOHANG);
@@ -6364,13 +6395,12 @@ static bool download_with_progress(const char *url, const char *out_path) {
         long cur = (stat(out_path, &st) == 0) ? (long)st.st_size : 0;
         if (total_size > 0) {
             int pct = (int)((cur * 100) / total_size);
-            draw_progress_bar(pct, "Downloading");
+            draw_progress_bar(pct, label);
         }
         if (r == pid) break;
         usleep(150000);
     }
-    draw_progress_bar(100, "Downloading");
-    printf("\n");
+    draw_progress_bar(100, label);
 
     return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
@@ -6398,6 +6428,8 @@ static bool download_with_progress(const char *url, const char *out_path) {
  * itself once the daemon has been redeployed, so the update step stays quiet about being done. */
 static bool g_update_defer_done_message = false;
 
+static void show_whats_new_from_install(const char *branch);
+
 static bool download_build_and_swap_update(const char *branch, bool relaunch,
                                            const char *new_version, const char *new_build) {
     char tmp_dir[PATH_MAX];
@@ -6407,12 +6439,15 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" && mkdir -p \"%s\"", tmp_dir, tmp_dir);
     system(cmd);
 
-    printf("\nDownloading HTID Update v%s %s...\n", new_version, new_build);
+    char dl_label[160];
+    snprintf(dl_label, sizeof(dl_label), "Downloading HTID Update v%s (%s)", new_version, new_build);
+    printf("\n");
     char zip_path[PATH_MAX];
     snprintf(zip_path, sizeof(zip_path), "%s/update.zip", tmp_dir);
     char dl_url[PATH_MAX];
     snprintf(dl_url, sizeof(dl_url), "%s/archive/refs/heads/%s.zip", UPDATE_REPO_URL, branch);
-    if (!download_with_progress(dl_url, zip_path)) {
+    if (!download_with_progress(dl_url, zip_path, dl_label)) {
+        upbar_clear();
         vfsc_err("Download failed. Staying on the current version.\n\n");
         snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
         system(cmd);
@@ -6445,6 +6480,7 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     snprintf(cmd, sizeof(cmd), "unzip -o \"%s\" -d \"%s\" 2>&1", zip_path, extract_dir);
     FILE *ep = popen(cmd, "r");
     if (!ep) {
+        upbar_clear();
         vfsc_err("Extraction failed. Staying on the current version.\n\n");
         snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
         system(cmd);
@@ -6464,14 +6500,13 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     int extract_wait_status = pclose(ep);
 
     if (!WIFEXITED(extract_wait_status) || WEXITSTATUS(extract_wait_status) != 0) {
-        printf("\n");
+        upbar_clear();
         vfsc_err("Extraction failed. Staying on the current version.\n\n");
         snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
         system(cmd);
         return false;
     }
     draw_progress_bar(100, "Extracting");
-    printf("\n");
 
     /* GitHub's branch zip always contains exactly one top-level
      * folder (named "<repo>-<branch>/", slashes in the branch name
@@ -6491,6 +6526,7 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     }
 
     if (src_dir[0] == '\0') {
+        upbar_clear();
         vfsc_err("Could not locate the extracted source folder. Staying on the current version.\n\n");
         snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
         system(cmd);
@@ -6501,6 +6537,7 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     snprintf(build_log, sizeof(build_log), "%s/build.log", tmp_dir);
     FILE *log_fp = fopen(build_log, "w");
     if (!log_fp) {
+        upbar_clear();
         vfsc_err("Could not open build log for writing. Staying on the current version.\n\n");
         snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
         system(cmd);
@@ -6536,6 +6573,7 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     FILE *bp = popen(cmd, "r");
     if (!bp) {
         fclose(log_fp);
+        upbar_clear();
         vfsc_err("Build failed to start. Staying on the current version.\n\n");
         snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
         system(cmd);
@@ -6576,11 +6614,13 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
         fflush(log_fp);       /* flush per line: a hung build must leave a readable log */
         if ((strstr(bline, "  missing: ") && !strstr(bline, "nothing")) ||
             strncmp(bline, "error:", 6) == 0) {
-            printf("\n%s", bline);
+            upbar_clear();
+            printf("%s", bline);
             draw_progress_bar(percent, "Building");
         }
         if (strstr(bline, "Missing for your sensor")) {
-            printf("\n%s", bline); /* names the packages, so a long install is not a mystery */
+            upbar_clear();
+            printf("%s", bline); /* names the packages, so a long install is not a mystery */
             printf("Installing the Homebrew packages your sensor needs (this can take a few minutes)...\n");
             draw_progress_bar(percent, "Building");
         }
@@ -6593,7 +6633,6 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
             draw_progress_bar(percent, "Building");
         }
     }
-    printf("\n");
 
     int build_wait_status = pclose(bp);
     fclose(log_fp);
@@ -6603,6 +6642,7 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     snprintf(new_binary, sizeof(new_binary), "%s/hack-touchid", src_dir);
 
     if (build_status != 0 || access(new_binary, X_OK) != 0) {
+        upbar_clear();
         vfsc_err("Build failed. Staying on the current version.\n");
         printf("  Build log kept for debugging: %s\n\n", build_log);
         /* Deliberately NOT deleting tmp_dir here -- the build log is
@@ -6611,7 +6651,7 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
         return false;
     }
 
-    printf("Build succeeded. Installing...\n");
+    draw_progress_bar(0, "Installing");
     snprintf(cmd, sizeof(cmd),
              "rm -rf \"%s\"/* \"%s\"/.[!.]* 2>/dev/null; cp -R \"%s\"/. \"%s\"/",
              g_exec_dir, g_exec_dir, src_dir, g_exec_dir);
@@ -6619,6 +6659,11 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
 
     snprintf(cmd, sizeof(cmd), "rm -rf \"%s\"", tmp_dir);
     system(cmd);
+    draw_progress_bar(100, "Installing");
+
+    /* What changed, straight from the CHANGELOG.md that just landed (no second download). */
+    upbar_clear();
+    show_whats_new_from_install(branch);
 
     /* The new source is in place. The installed daemon is now stale, and
      * only [3] Deploy replaces it, so remove it here. */
@@ -6626,14 +6671,18 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     g_daemon_removed_by_update = daemon_removed;
 
     if (!relaunch) {
+        if (g_update_defer_done_message) return true; /* the caller keeps the bar going (re-deploy) */
+        upbar_clear();
         printf("Update installed.\n");
-        if (g_update_defer_done_message) return true;
+        if (daemon_removed) {
+            printf("%sDaemon un-installed, Please run [3] Again.%s\n", VFSC_YELLOW, VFSC_RESET);
+        }
         printf("%sUpdate was successfully deployed & installed! :)%s\n", VFSC_YELLOW, VFSC_RESET);
         printf("Update was complete, please run sudo hack-touchid to launch the client.\n\n");
         return true;
     }
 
-    printf("Update installed. Relaunching...\n\n");
+    upbar_clear();
     fflush(stdout);
 
     char new_path[PATH_MAX];
@@ -6759,24 +6808,9 @@ static void print_changelog_line(const char *line, size_t len, bool header) {
     putchar('\n');
 }
 
-static bool show_update_changelog(const char *branch, const char *local_version) {
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "curl -fsS -m 5 '%s/%s/CHANGELOG.md' 2>/dev/null",
-             UPDATE_RAW_BASE_URL, branch);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return false;
-
-    char *buf = malloc(UPDATE_CL_MAX_BYTES + 1);
-    if (!buf) { pclose(fp); return false; }
-    size_t total = 0, n;
-    while (total < UPDATE_CL_MAX_BYTES &&
-           (n = fread(buf + total, 1, UPDATE_CL_MAX_BYTES - total, fp)) > 0) {
-        total += n;
-    }
-    buf[total] = '\0';
-    pclose(fp);
-    if (total == 0) { free(buf); return false; }
-
+/* Prints the "What's new" block for CHANGELOG.md text in buf (NUL terminated), relative to
+ * local_version. Shared by [A] (fetched from GitHub) and the updater (the file it just installed). */
+static void print_whats_new(const char *buf, const char *branch, const char *local_version) {
     int local_code = parse_version_code(local_version);
     printf("\n%sWhat's new%s\n", VFSC_BCYAN, VFSC_RESET);
 
@@ -6819,8 +6853,46 @@ static bool show_update_changelog(const char *branch, const char *local_version)
         printf("No changelog entries found for this update.\n");
     }
     printf("\nFull changelog: %s/blob/%s/CHANGELOG.md\n\n", UPDATE_REPO_URL, branch);
+}
+
+static bool show_update_changelog(const char *branch, const char *local_version) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "curl -fsS -m 5 '%s/%s/CHANGELOG.md' 2>/dev/null",
+             UPDATE_RAW_BASE_URL, branch);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return false;
+
+    char *buf = malloc(UPDATE_CL_MAX_BYTES + 1);
+    if (!buf) { pclose(fp); return false; }
+    size_t total = 0, n;
+    while (total < UPDATE_CL_MAX_BYTES &&
+           (n = fread(buf + total, 1, UPDATE_CL_MAX_BYTES - total, fp)) > 0) {
+        total += n;
+    }
+    buf[total] = '\0';
+    pclose(fp);
+    if (total == 0) { free(buf); return false; }
+
+    print_whats_new(buf, branch, local_version);
     free(buf);
     return true;
+}
+
+/* Updater: shows what's new from the CHANGELOG.md that was just installed. The running process is
+ * still the old build, so VFS5011_PROJECT_VERSION is the version the update is relative to.
+ * Prints nothing if the file is missing. */
+static void show_whats_new_from_install(const char *branch) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/CHANGELOG.md", g_exec_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char *buf = malloc(UPDATE_CL_MAX_BYTES + 1);
+    if (!buf) { fclose(f); return; }
+    size_t total = fread(buf, 1, UPDATE_CL_MAX_BYTES, f);
+    buf[total] = '\0';
+    fclose(f);
+    if (total > 0) print_whats_new(buf, branch, VFS5011_PROJECT_VERSION);
+    free(buf);
 }
 
 /* ------------------------------------------------------------------ *
@@ -6975,16 +7047,125 @@ static void do_settings_recent_commits(void) {
  * installed binary (this process is still the old one) with --deploy-agent. HTID_NO_PAUSE stops
  * that run from waiting for Return, since the caller's terminal is already being watched.
  * Shared by [X] Update & Re-Deploy and the menu bar updater. */
+#define UPDATE_DEPLOY_LOG "/tmp/htid-update-deploy.log"
+#define UPDATE_DEPLOY_LABEL "Re-deploying the daemon"
+
+/* Maps a line of --deploy-agent output to a bar percentage, or -1 for a line that is not a known
+ * step. The wording differs per sensor family, so unknown lines just nudge the bar forward. */
+static int deploy_line_percent(const char *line) {
+    static const struct { const char *needle; int pct; } steps[] = {
+        { "detected: continue", 10 },
+        { "detected. continuing", 20 },
+        { "Deploying Authentication Service", 25 },
+        { "Building daemon executable", 40 },
+        { "Registering background service", 60 },
+        { "Service deployed successfully", 70 },
+        { "Accessibility permission", 75 },
+        { "Unlocking any cryptographic", 80 },
+        { "Login password", 85 },
+        { "Installing the menu bar app", 90 },
+        { "Menu bar app version", 94 },
+        { "Lock your screen", 97 },
+        { "(re)install complete", 100 },
+    };
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+        if (strstr(line, steps[i].needle)) return steps[i].pct;
+    }
+    return -1;
+}
+
+/* After an update the stale daemon is gone and only a deploy puts one back. Runs the NEWLY
+ * installed binary (this process is still the old one) with --deploy-agent, shows its progress on
+ * the updater's single bar and keeps the full output in UPDATE_DEPLOY_LOG. HTID_NO_PAUSE stops that
+ * run from waiting for Return, since the caller's terminal is already being watched.
+ * If the deploy asks something (the login password prompt has no newline), the text is passed
+ * through to the terminal so the person can answer it.
+ * Shared by [X] Update & Re-Deploy and the menu bar updater. */
 static bool redeploy_daemon_with_new_client(void) {
-    printf("Redeploying the daemon with the new client...\n\n");
-    fflush(stdout);
     char deploy_cmd[PATH_MAX + 64];
-    snprintf(deploy_cmd, sizeof(deploy_cmd), "HTID_NO_PAUSE=1 \"%s/hack-touchid\" --deploy-agent", g_exec_dir);
-    int deploy_rc = system(deploy_cmd);
-    if (deploy_rc != 0) {
-        vfsc_err("The daemon redeploy did not finish. Run: sudo hack-touchid --deploy-agent\n\n");
+    snprintf(deploy_cmd, sizeof(deploy_cmd),
+             "HTID_NO_PAUSE=1 \"%s/hack-touchid\" --deploy-agent 2>&1", g_exec_dir);
+    draw_progress_bar(0, UPDATE_DEPLOY_LABEL);
+    fflush(stdout);
+    FILE *dp = popen(deploy_cmd, "r");
+    if (!dp) {
+        upbar_clear();
+        vfsc_err("Could not start the daemon redeploy. Run: sudo hack-touchid --deploy-agent\n\n");
         return false;
     }
+    FILE *lg = fopen(UPDATE_DEPLOY_LOG, "w");
+    int fd = fileno(dp);
+    char acc[1024];
+    size_t acc_len = 0;
+    bool raw = false, complete = false;
+    int pct = 0;
+
+    for (;;) {
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(fd, &rf);
+        struct timeval tv = { 0, 700000 };
+        int sr = select(fd + 1, &rf, NULL, NULL, &tv);
+        if (sr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (sr == 0) {
+            /* Output without a newline for a while is a prompt: show it. */
+            if (acc_len > 0 && !raw) {
+                upbar_clear();
+                fwrite(acc, 1, acc_len, stdout);
+                fflush(stdout);
+                raw = true;
+                acc_len = 0;
+            }
+            continue;
+        }
+        char chunk[512];
+        ssize_t n = read(fd, chunk, sizeof(chunk));
+        if (n <= 0) break;
+        if (lg) { fwrite(chunk, 1, (size_t)n, lg); fflush(lg); }
+
+        for (ssize_t i = 0; i < n; i++) {
+            char c = chunk[i];
+            if (raw) {
+                putchar(c);
+                if (c == '\n') {
+                    raw = false;
+                    fflush(stdout);
+                    draw_progress_bar(pct, UPDATE_DEPLOY_LABEL);
+                }
+                continue;
+            }
+            if (c != '\n' && acc_len < sizeof(acc) - 1) {
+                if (c != '\r') acc[acc_len++] = c;
+                continue;
+            }
+            acc[acc_len] = '\0';
+            acc_len = 0;
+            int step = deploy_line_percent(acc);
+            if (strstr(acc, "(re)install complete")) complete = true;
+            if (step > pct) pct = step;
+            else if (step < 0 && pct < 95) pct++;
+            draw_progress_bar(pct, UPDATE_DEPLOY_LABEL);
+        }
+        if (raw) fflush(stdout);
+    }
+    int deploy_rc = pclose(dp);
+    if (lg) fclose(lg);
+
+    if (deploy_rc != 0 || !complete) {
+        upbar_clear();
+        vfsc_err("The daemon redeploy did not finish. Run: sudo hack-touchid --deploy-agent\n");
+        printf("  Deploy output kept in %s, last lines:\n", UPDATE_DEPLOY_LOG);
+        char tail_cmd[128];
+        snprintf(tail_cmd, sizeof(tail_cmd), "tail -n 15 %s 2>/dev/null | sed 's/^/    /'", UPDATE_DEPLOY_LOG);
+        fflush(stdout);
+        system(tail_cmd);
+        printf("\n");
+        return false;
+    }
+    draw_progress_bar(100, UPDATE_DEPLOY_LABEL);
     return true;
 }
 
@@ -7049,13 +7230,13 @@ static void run_update_prompt(const client_version_info_t *local,
     if (!updated) return;
 
     bool deployed = redeploy_daemon_with_new_client();
+    upbar_clear();
     if (!relaunch) {
         printf("%sUpdate was successfully deployed & installed! :)%s\n", VFSC_YELLOW, VFSC_RESET);
         printf("Update was complete, please run sudo hack-touchid to launch the client.\n\n");
         return;
     }
 
-    printf("Relaunching...\n\n");
     fflush(stdout);
     char new_path[PATH_MAX];
     snprintf(new_path, sizeof(new_path), "%s/hack-touchid", g_exec_dir);
@@ -7195,11 +7376,21 @@ static void run_check_updates_mode(void) {
 static void run_menu_updater_mode(void) {
     client_version_info_t local, remote;
     if (!headless_find_update(&local, &remote)) return;
-    if (!download_build_and_swap_update(local.branch, false, remote.version, remote.build)) return;
+    g_update_defer_done_message = true;
+    bool updated = download_build_and_swap_update(local.branch, false, remote.version, remote.build);
+    g_update_defer_done_message = false;
+    if (!updated) return;
 
     /* The update removes the stale daemon and only a deploy puts one back, so do that now
      * instead of leaving the person to find [3] Deploy. */
-    (void)redeploy_daemon_with_new_client();
+    bool deployed = redeploy_daemon_with_new_client();
+    upbar_clear();
+    if (deployed) {
+        printf("%sUpdate was successfully deployed & installed! :)%s\n", VFSC_YELLOW, VFSC_RESET);
+    } else {
+        printf("Update installed. Run sudo hack-touchid and press [3] to redeploy the daemon.\n");
+    }
+    printf("Update was complete, please run sudo hack-touchid to launch the client.\n\n");
 }
 
 /* ------------------------------------------------------------------ *
@@ -8275,6 +8466,7 @@ int main(int argc, char **argv) {
         }
         if (strcmp(argv[i], "--post-update") == 0) {
             g_post_update_mode = true;
+            g_status_quiet = true;
         }
         if (strcmp(argv[i], "--daemon-removed") == 0) {
             g_daemon_removed_by_update = true;
@@ -8599,7 +8791,21 @@ int main(int argc, char **argv) {
      * Failure here (e.g. volume not set up yet) just leaves the
      * count at 0/unset -- Settings will explain why if relevant. */
     vfsc_status_line("Checking enrolled fingers...");
-    refresh_finger_cache();
+    if (g_post_update_mode) {
+        /* diskutil prints its own unlock lines; keep the post-update screen to one clean line. */
+        fflush(stdout);
+        fflush(stderr);
+        int saved_out = dup(STDOUT_FILENO), saved_err = dup(STDERR_FILENO);
+        int dn = open("/dev/null", O_WRONLY);
+        if (dn >= 0) { dup2(dn, STDOUT_FILENO); dup2(dn, STDERR_FILENO); close(dn); }
+        refresh_finger_cache();
+        fflush(stdout);
+        fflush(stderr);
+        if (saved_out >= 0) { dup2(saved_out, STDOUT_FILENO); close(saved_out); }
+        if (saved_err >= 0) { dup2(saved_err, STDERR_FILENO); close(saved_err); }
+    } else {
+        refresh_finger_cache();
+    }
     vfsc_boot_line("Template DB: %d enrolled", g_finger_count > 0 ? g_finger_count : 0);
     vfsc_status_line_ok("hack-touchid: init complete");
 
@@ -8612,6 +8818,7 @@ int main(int argc, char **argv) {
         print_banner();
     }
 
+    g_status_quiet = false;
     if (g_post_update_mode) {
         printf("%sUpdate was successfully deployed & installed! :)%s\n", VFSC_YELLOW, VFSC_RESET);
         if (g_daemon_removed_by_update) {
