@@ -18,11 +18,12 @@
 # libusb dependency build_daemon.sh already has. On Mohammad's Intel DV6,
 # Homebrew installs to /usr/local and openssl@3 is keg-only, so its
 # headers/libs aren't on the default search path the way libusb's are --
-# hardcode the keg-only path the same way build_daemon.sh hardcodes
-# /usr/local for libusb.
+# ht_env.sh sets that keg-only path (or MacPorts' /opt/local/libexec/openssl3)
+# and the libusb prefix for us.
 #
 # Lives in scripts/, writes ./metallica_mis_daemon to the repo root, works from
-# any directory. Requires: brew install openssl@3 (in addition to libusb).
+# any directory. Requires openssl@3 (brew install openssl@3, or sudo port install
+# openssl3 on MacPorts) in addition to libusb.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # scripts/
@@ -32,11 +33,11 @@ cd "$SCRIPT_DIR/.."                           # repo root: binaries land here
 OPENSSL_PREFIX="$HT_OPENSSL_PREFIX"
 
 if [ ! -d "$OPENSSL_PREFIX" ]; then
-    echo "error: $OPENSSL_PREFIX not found -- install with: brew install openssl@3" >&2
+    echo "error: $OPENSSL_PREFIX not found -- install with: $(ht_install_hint openssl@3)" >&2
     exit 1
 fi
 if [ ! -f "$HT_LIBUSB_INC/libusb.h" ]; then
-    echo "error: libusb not found under $HT_BREW_PREFIX -- install with: brew install libusb" >&2
+    echo "error: libusb not found under $HT_PREFIX -- install with: $(ht_install_hint libusb)" >&2
     exit 1
 fi
 

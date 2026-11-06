@@ -18,11 +18,11 @@ cd "$SCRIPT_DIR/.."                           # repo root: binaries land here
 OPENSSL_PREFIX="$HT_OPENSSL_PREFIX"
 
 if [ ! -d "$OPENSSL_PREFIX" ]; then
-    echo "error: $OPENSSL_PREFIX not found -- install with: brew install openssl@3" >&2
+    echo "error: $OPENSSL_PREFIX not found -- install with: $(ht_install_hint openssl@3)" >&2
     exit 1
 fi
 if [ ! -f "$HT_LIBUSB_INC/libusb.h" ]; then
-    echo "error: libusb not found under $HT_BREW_PREFIX -- install with: brew install libusb" >&2
+    echo "error: libusb not found under $HT_PREFIX -- install with: $(ht_install_hint libusb)" >&2
     exit 1
 fi
 

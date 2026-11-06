@@ -52,7 +52,7 @@ echo "Client build for sensor family: $FAMILIES"
 MISSING="$("$HT_TOOL" deps build "$FAMILIES" | ht_filter_missing | paste -sd' ' -)"
 if [ -n "$MISSING" ]; then
     echo "error: missing build dependencies for this sensor: $MISSING" >&2
-    echo "       install with: brew install $MISSING" >&2
+    echo "       install with: $(ht_install_hint $MISSING)" >&2
     echo "       or run ./prep_and_build.sh --sensor $FAMILIES to be offered the install." >&2
     exit 1
 fi
