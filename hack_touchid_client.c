@@ -7350,8 +7350,8 @@ static bool ht_file_exists(const char *path) {
     return access(path, F_OK) == 0;
 }
 
-/* Checks the same two Homebrew prefixes the build scripts know about
- * (Intel /usr/local first, then /opt/homebrew). */
+/* Checks the same prefixes the build scripts know about: the two Homebrew ones (Intel /usr/local
+ * first, then /opt/homebrew), then MacPorts (/opt/local). */
 static bool ht_dep_present(unsigned bit) {
     static const char *prefixes[] = { "/usr/local", "/opt/homebrew" };
     char path[PATH_MAX];
@@ -7374,6 +7374,18 @@ static bool ht_dep_present(unsigned bit) {
         }
         if (ht_file_exists(path)) return true;
     }
+    /* MacPorts keeps everything under /opt/local; its OpenSSL 3 is in libexec/openssl3. */
+    {
+        const char *port_path = NULL;
+        switch (bit) {
+            case HT_DEP_LIBUSB:      port_path = "/opt/local/lib/libusb-1.0.dylib"; break;
+            case HT_DEP_OPENSSL:     port_path = "/opt/local/libexec/openssl3/lib/libssl.3.dylib"; break;
+            case HT_DEP_INNOEXTRACT: port_path = "/opt/local/bin/innoextract"; break;
+            case HT_DEP_SEVENZIP:    port_path = "/opt/local/bin/7zz"; break;
+            default: break;
+        }
+        if (port_path && ht_file_exists(port_path)) return true;
+    }
     /* sudo often strips Homebrew from PATH, so the file checks above are
      * the real test; PATH is only a last resort for odd installs. */
     if (bit == HT_DEP_INNOEXTRACT)
@@ -7387,6 +7399,27 @@ static const char *ht_find_brew(void) {
     if (ht_file_exists("/usr/local/bin/brew"))    return "/usr/local/bin/brew";
     if (ht_file_exists("/opt/homebrew/bin/brew")) return "/opt/homebrew/bin/brew";
     return NULL;
+}
+
+/* MacPorts' port tool, when it is installed (used when Homebrew is not). */
+static const char *ht_find_port(void) {
+    if (ht_file_exists("/opt/local/bin/port")) return "/opt/local/bin/port";
+    return NULL;
+}
+
+/* Turns the Homebrew formula names in `formulas` (space separated, as supported_sensors.h
+ * spells them) into MacPorts package names: openssl@3 is openssl3, sevenzip is 7zip. */
+static void ht_port_names(const char *formulas, char *out, size_t out_size) {
+    out[0] = '\0';
+    char copy[256];
+    snprintf(copy, sizeof(copy), "%s", formulas);
+    for (char *save = NULL, *tok = strtok_r(copy, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+        const char *name = tok;
+        if (strcmp(tok, "openssl@3") == 0) name = "openssl3";
+        else if (strcmp(tok, "sevenzip") == 0) name = "7zip";
+        size_t used = strlen(out);
+        snprintf(out + used, out_size - used, "%s%s", used ? " " : "", name);
+    }
 }
 
 static bool check_sensor_dependencies(void) {
@@ -7426,7 +7459,32 @@ static bool check_sensor_dependencies(void) {
     const char *brew = ht_find_brew();
     const char *sudo_user = getenv("SUDO_USER");
     if (!brew) {
-        printf("Homebrew was not found. Install it, then run: brew install %s\n", formulas);
+        const char *port = ht_find_port();
+        if (!port) {
+            printf("Neither Homebrew nor MacPorts was found. Install one, then run: brew install %s\n", formulas);
+            return true;
+        }
+        /* MacPorts instead of Homebrew. port needs root, and this client normally already is. */
+        char ports[256];
+        ht_port_names(formulas, ports, sizeof(ports));
+        if (!isatty(STDIN_FILENO)) {
+            printf("Install with: sudo port install %s\n", ports);
+            return true;
+        }
+        printf("Install only these now with MacPorts? [y/N] ");
+        fflush(stdout);
+        char port_answer[16] = "";
+        if (!fgets(port_answer, sizeof(port_answer), stdin) || (port_answer[0] != 'y' && port_answer[0] != 'Y')) {
+            printf("Skipped. Install later with: sudo port install %s\n", ports);
+            return true;
+        }
+        char port_cmd[512];
+        snprintf(port_cmd, sizeof(port_cmd), "%s\"%s\" install %s", geteuid() == 0 ? "" : "sudo ", port, ports);
+        if (system(port_cmd) != 0) {
+            vfsc_warn("MacPorts could not finish the install. Run it yourself: sudo port install %s\n", ports);
+            return true;
+        }
+        vfsc_status_line_ok("Dependencies installed.");
         return true;
     }
     if (!isatty(STDIN_FILENO)) {
