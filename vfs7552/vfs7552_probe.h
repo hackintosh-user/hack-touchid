@@ -6,7 +6,7 @@
  *
  * First base of the Synaptics VFS7552 (138a:0092) backend. This is a
  * READ-ONLY probe: it finds the sensor, prints its USB descriptors,
- * claims interface 0 and sends only the three harmless query commands
+ * claims interface 0 and sends only harmless read-only query commands
  * python-validity's Usb.send_init() starts with (RomInfo 0x01, 0x19 and
  * the fwext info query 0x43 0x02). It never sends the init blob, never
  * pairs, never touches the flash. Its job is to tell us whether this
