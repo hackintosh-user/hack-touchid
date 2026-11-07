@@ -38,10 +38,11 @@
 #define HT_DEP_LIBUSB       (1u << 0)  /* every sensor: USB access */
 #define HT_DEP_OPENSSL      (1u << 1)  /* Metallica MIS: ECDH/HMAC/SHA session crypto */
 #define HT_DEP_INNOEXTRACT  (1u << 2)  /* Metallica MIS: unpacks Lenovo's firmware installer */
-#define HT_DEP_ALL (HT_DEP_LIBUSB | HT_DEP_OPENSSL | HT_DEP_INNOEXTRACT)
+#define HT_DEP_SEVENZIP     (1u << 3)  /* VFS7552: unpacks HP's 7-Zip SoftPaq (innoextract can't) */
+#define HT_DEP_ALL (HT_DEP_LIBUSB | HT_DEP_OPENSSL | HT_DEP_INNOEXTRACT | HT_DEP_SEVENZIP)
 
 typedef struct {
-    const char *family;            /* build family: "vfs5011", "upek" or "metallica" */
+    const char *family;            /* build family: "vfs5011", "upek", "metallica" or "vfs7552" */
     unsigned deps_build;           /* HT_DEP_* bits needed to compile and link this family */
     unsigned deps_runtime;         /* HT_DEP_* bits needed while the client/daemon runs */
     const char *display_name;      /* shown in the client, e.g. "VFS5011" */
@@ -171,6 +172,28 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
         .install_script_name  = "metallica/metallica_mis_agent_install.sh",
         .backend_available    = 0,
     },
+    {
+        /* Synaptics VFS7552, 138a:0092 (GitHub issue #5, reporter has an
+         * HP EliteBook x360 1030 G2). Same Prometheus family as the
+         * Metallica MIS rows above (TLS pairing, match-in-sensor), but with
+         * its own firmware (HP SoftPaq SP135737, a 7-Zip archive, so it
+         * needs 7-Zip, not innoextract), its own flash layout and its own
+         * blobs, per python-validity's device/0092 branch. Its own family
+         * so only this sensor's users ever install 7-Zip. Nov 2026: only
+         * the read-only probe exists (hack-touchid --probe-7552 and
+         * --fetch-fw-7552, see vfs7552/); no OpenSSL is linked yet, it
+         * joins deps_build when pairing/TLS is ported. backend_available
+         * stays 0 until real hardware has confirmed enroll and verify. */
+        .family              = "vfs7552",
+        .deps_build          = HT_DEP_LIBUSB,
+        .deps_runtime        = HT_DEP_LIBUSB | HT_DEP_SEVENZIP,
+        .display_name        = "Synaptics VFS7552",
+        .vid                  = 0x138a,
+        .pid                  = 0x0092,
+        .daemon_binary_name   = "vfs7552_daemon",
+        .install_script_name  = "vfs7552/vfs7552_agent_install.sh",
+        .backend_available    = 0,
+    },
 };
 
 #define HACK_TOUCHID_SENSOR_COUNT \
@@ -183,6 +206,7 @@ static inline const char *ht_dep_formula(unsigned bit) {
         case HT_DEP_LIBUSB:      return "libusb";
         case HT_DEP_OPENSSL:     return "openssl@3";
         case HT_DEP_INNOEXTRACT: return "innoextract";
+        case HT_DEP_SEVENZIP:    return "sevenzip";
         default:                 return NULL;
     }
 }
@@ -192,6 +216,7 @@ static inline const char *ht_dep_label(unsigned bit) {
         case HT_DEP_LIBUSB:      return "libusb (USB access)";
         case HT_DEP_OPENSSL:     return "OpenSSL 3 (sensor session crypto)";
         case HT_DEP_INNOEXTRACT: return "innoextract (firmware unpacker)";
+        case HT_DEP_SEVENZIP:    return "7-Zip (HP firmware unpacker)";
         default:                 return "unknown";
     }
 }

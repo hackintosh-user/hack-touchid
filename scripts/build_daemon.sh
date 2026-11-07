@@ -8,7 +8,7 @@ cd "$SCRIPT_DIR/.."                           # repo root: binaries land here
 . "$SCRIPT_DIR/ht_env.sh"
 
 if [ ! -f "$HT_LIBUSB_INC/libusb.h" ]; then
-    echo "error: libusb not found under $HT_BREW_PREFIX -- install with: brew install libusb" >&2
+    echo "error: libusb not found under $HT_PREFIX -- install with: $(ht_install_hint libusb)" >&2
     exit 1
 fi
 

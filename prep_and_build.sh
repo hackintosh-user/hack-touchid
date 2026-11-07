@@ -38,7 +38,7 @@
 #   ./prep_and_build.sh --sensor all         everything (old behaviour)
 #   ./prep_and_build.sh --list               show families and what each needs
 #   ./prep_and_build.sh --yes                install missing deps without asking
-#   ./prep_and_build.sh --no-install         never touch Homebrew, just report
+#   ./prep_and_build.sh --no-install         never touch Homebrew or MacPorts, just report
 #   ./prep_and_build.sh --no-pane            skip building the preference pane
 #
 # The System Settings preference pane is compiled into shared/pane/build/
@@ -93,7 +93,7 @@ echo "== Choosing your sensor =="
 ht_ensure_tool
 
 if [ "$LIST_ONLY" = "1" ]; then
-    echo "Families (USB IDs), and the Homebrew packages each one needs:"
+    echo "Families (USB IDs), and the packages each one needs (Homebrew names; MacPorts: openssl@3 is openssl3, sevenzip is 7zip):"
     "$HT_TOOL" families | while IFS='|' read -r fam name ids; do
         need="$("$HT_TOOL" deps all "$fam" | paste -sd' ' -)"
         printf '  %-10s %-28s [%s]\n             needs: %s\n' "$fam" "$name" "$ids" "$need"
@@ -153,7 +153,7 @@ if [ "$FALLBACK_ALL" = "1" ]; then
         fi
     done
     if [ -n "$KEEP" ]; then
-        [ -z "$SKIPPED" ] || echo "Skipping $SKIPPED: its Homebrew packages are not installed and no sensor of that kind was detected."
+        [ -z "$SKIPPED" ] || echo "Skipping $SKIPPED: its packages are not installed and no sensor of that kind was detected."
         FAMILIES="$KEEP"
     fi
 fi
@@ -169,7 +169,7 @@ if [ -z "$MISSING" ]; then
 else
     echo "  missing: $MISSING"
     if [ "$NO_INSTALL" = "1" ]; then
-        echo "error: --no-install given. Install with: brew install $MISSING" >&2
+        echo "error: --no-install given. Install with: $(ht_install_hint $MISSING)" >&2
         exit 1
     fi
     # shellcheck disable=SC2086

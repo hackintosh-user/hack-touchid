@@ -39,11 +39,12 @@ into the prompt automatically.
 This Table will have the currently Supported Sensors or sensors in **Development** or **Planned Support**. Please keep your expectations in check, this is a hobby project.
 | Sensor Name / Model    | VID  | PID  | Support status                                                                | Supported Features               |
 |------------------------|------|------|-------------------------------------------------------------------------------|----------------------------------|
-| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (Thanks Hackintosh-user)**    | **Fully Supported**              | 
-| Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt)**             | **Fully Supported**              |
-| Prometheus 97          | 138A | 0097 | **Developing & actively testing (Thanks u/p0cketl1nt)**                       | **Unfinshed**                    | 
+| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (Thanks Hackintosh-user!)**   | **Fully Supported.**             | 
+| Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt!)**            | **Fully Supported.**             |
+| Prometheus 97          | 138A | 0097 | **Developing & actively testing (Thanks u/p0cketl1nt!)**                      | **Features in development**.     | 
 | Prometheus 9d          | 138A | 009d | **Developing / Supposed to work according to python-validity**                | **according to python-validity** |
-| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing**                                             | **Unfinshed**                    | 
+| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing(thanks u/dCold_Salamander7764!)**             | **Features in development**.     |  
+| Synaptics VFS7552      | 138A | 0092 | **Developing & actively Testing (thanks priyashgawande-commits!)**            | **Features in development**.     | 
 
  * Please Keep in Mind that some sensor names are **too long to fit in the table** the VID:PID for each currently or planned sensor will be in the table and regardless the client itself checks if your sensor is supported.
  * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesn't work.
@@ -150,11 +151,12 @@ Known limitations:
 - **macOS 14 Sonoma and later** (older versions may work, but I offer **0 support for them**)
 - **macOS 15 Sequoia and later is the recommended version for Hackintosh Touch-ID** 
 - Xcode Command Line Tools (`xcode-select --install`)
-- [Homebrew](https://brew.sh)
+- [Homebrew](https://brew.sh) or [MacPorts](https://www.macports.org) (the build scripts and the client look in both; with MacPorts the packages below are `libusb`, `openssl3`, `innoextract` and `7zip`, installed with `sudo port install`)
 - Dependencies depend on your sensor. `prep_and_build.sh` installs only what yours needs (run `./prep_and_build.sh --list` to see it):
   - `libusb` (`brew install libusb`), every sensor
   - `openssl@3` (`brew install openssl@3`), Metallica MIS only [will be Deprecated on Novemeber 1st 2026 but should work fine still]
   - `innoextract` (`brew install innoextract`), Metallica MIS only
+  - `sevenzip` (`brew install sevenzip`), Synaptics VFS7552 only
 - Accessibility permission granted to the daemon (handled automatically
   by the deploy script, see below)
 - ```OpenCore v1.0.6 or later``` (For maximum Security | Release or Debug are fine) but on older versions of OpenCore will work but I don't support it. You are on your own if you use v1.0.5 or older.
@@ -368,10 +370,11 @@ driver exists.
 
 ## Credits
 
-* @Hackintosh-user: Main Lead developer
-* @ilikehackintosh: Documentation handler
-* [u/p0cketl1nt](https://www.reddit.com/user/p0cketl1nt/): Main tester for Metallica MIS 06cb:009a & Prometheus 97 138a:0097 (massive thank you!)
-* [u/dCold_Salamander7764](https://www.reddit.com/user/Cold_Salamander7764/): Main tester for UPEK touch-Strip 147e:2016 (massive thank you!)
+* [@Hackintosh-user](https://github.com/hackintosh-user): Main Lead developer
+* [@ilikehackintosh](https://github.com/ilikehackintosh): Documentation handler
+* [u/p0cketl1nt](https://www.reddit.com/user/p0cketl1nt/): Main tester for Metallica MIS 06cb:009a & Prometheus 97 138a:0097 (Massive thank you!)
+* [u/dCold_Salamander7764](https://www.reddit.com/user/Cold_Salamander7764/): Main tester for UPEK touch-Strip 147e:2016 (Massive thank you!)
+* [@priyashgawande-commits](https://github.com/priyashgawande-commits)L Main tester for Synaptics VFS7552 (Massive thank you!)
 
 ## License
 
