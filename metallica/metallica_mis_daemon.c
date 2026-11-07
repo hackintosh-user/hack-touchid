@@ -1060,6 +1060,39 @@ int metallica_mis_send_init(void) {
     return 0;
 }
 
+/* [DIAGNOSTIC, Nov 7] The calibration capture failed to average (a 138a:0097 returned 131176 bytes,
+ * 863 lines of 152, where 6 frames x 144 lines = 864 were expected). Keep exactly what the sensor
+ * sent, plus the numbers we expected and every line's 8-byte header, so the real frame layout can
+ * be checked. Remove once the 0097 calibration is understood. */
+static void mmis_dump_calibration_capture(const mmis_sensor_profile_t *prof, size_t lines_per_frame,
+                                          const uint8_t *raw, size_t raw_len, const char *what) {
+    const char *bin_path = "/tmp/htid-calibrate-raw.bin";
+    const char *info_path = "/tmp/htid-calibrate-info.txt";
+    size_t bpl = prof->bytes_per_line;
+    size_t frame_size = lines_per_frame * bpl;
+    FILE *f = fopen(bin_path, "wb");
+    if (f) { fwrite(raw, 1, raw_len, f); fclose(f); }
+    FILE *t = fopen(info_path, "w");
+    if (t) {
+        fprintf(t, "capture: %s\nsensor profile: %s\n", what, prof->name);
+        fprintf(t, "bytes_per_line %zu, lines_per_frame %zu, calibration_frames %d, lines_per_calibration_data %zu\n",
+                bpl, lines_per_frame, (int)prof->calibration_frames, prof->lines_per_calibration_data);
+        fprintf(t, "expected raw bytes (calibration_frames x frame) %zu, got %zu\n",
+                frame_size * (size_t)prof->calibration_frames, raw_len);
+        if (bpl) fprintf(t, "got %zu whole lines + %zu spare bytes\n", raw_len / bpl, raw_len % bpl);
+        fprintf(t, "\nline: first 8 header bytes\n");
+        for (size_t k = 0; bpl && (k + 1) * bpl <= raw_len; k++) {
+            fprintf(t, "%4zu:", k);
+            for (size_t b = 0; b < 8 && b < bpl; b++) fprintf(t, " %02x", raw[k * bpl + b]);
+            fprintf(t, "%s\n", (lines_per_frame && (k + 1) % lines_per_frame == 0) ? "   <- expected frame end" : "");
+        }
+        fclose(t);
+    }
+    fprintf(stderr, "metallica_mis: calibration capture saved to %s and %s (%zu bytes, %zu lines, expected %zu bytes). "
+                    "Send both files if you report this.\n",
+            bin_path, info_path, raw_len, bpl ? raw_len / bpl : 0, frame_size * (size_t)prof->calibration_frames);
+}
+
 /*
  * metallica_mis_do_calibrate() -- port of Sensor.calibrate()'s
  * calibration loop + clean-slate construction, for the type-0x199
@@ -1212,6 +1245,7 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
         if (!mmis_profile_average(prof, raw_buf, (size_t)raw_len, lines_per_frame,
                                   cooked_buf, sizeof(cooked_buf), &cooked_len)) {
             fprintf(stderr, "metallica_mis_do_calibrate: average() failed on iteration %d\n", i);
+            mmis_dump_calibration_capture(prof, lines_per_frame, raw_buf, (size_t)raw_len, "calibration iteration");
             return -1;
         }
 
@@ -1263,6 +1297,7 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
     if (!mmis_profile_average(prof, raw_buf, (size_t)raw_len, lines_per_frame,
                               cooked_buf, sizeof(cooked_buf), &cooked_len)) {
         fprintf(stderr, "metallica_mis_do_calibrate: average() failed for blank image\n");
+        mmis_dump_calibration_capture(prof, lines_per_frame, raw_buf, (size_t)raw_len, "blank image");
         return -1;
     }
 
