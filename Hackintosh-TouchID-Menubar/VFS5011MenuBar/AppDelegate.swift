@@ -129,6 +129,7 @@ enum VFS5011Notification {
     static let swipeFailed      = "\(prefix).swipe_failed"
     static let swipeLockout     = "\(prefix).swipe_lockout"
     static let swipeWeak        = "\(prefix).swipe_weak"
+    static let swipeCancelled   = "\(prefix).swipe_cancelled"
 
     // Daemon -> menu bar app (state confirmation, so the UI is correct
     // even if the app launches after the daemon, or the daemon restarts)
@@ -209,6 +210,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     private var statusItem: NSStatusItem!
+    // The on-screen auth card (top middle, above every app). Replaces the old
+    // Notification Center banners for swipe/touch prompts and results.
+    private let authOverlay = AuthOverlay()
+    // True from "swipe requested" until a final result (success, lockout, cancelled), so a
+    // failed or weak attempt can drop back to the Waiting card.
+    private var authEpisodeOpen = false
     private var clientUpdateTimer: Timer?
     private var aboutWindow: NSWindow?
     private var scanningEnabled: Bool = true {
@@ -241,6 +248,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         requestNotificationPermission()
         registerForDaemonNotifications()
         registerAsLoginItemIfNeeded()
+
+        // Preview for design checks: `HackintoshTouchID --overlay-demo` cycles every card.
+        if CommandLine.arguments.contains("--overlay-demo") {
+            authOverlay.runDemo()
+        }
 
         // Known trigger for a missing/broken daemon (per project notes):
         // a macOS point update wipes it, similar to OCLP root patches
@@ -866,6 +878,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             VFS5011Notification.swipeFailed,
             VFS5011Notification.swipeLockout,
             VFS5011Notification.swipeWeak,
+            VFS5011Notification.swipeCancelled,
             VFS5011Notification.scanningEnabled,
             VFS5011Notification.scanningDisabled,
             VFS5011Notification.lockswipeEnabled,
@@ -927,54 +940,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
             switch name {
             case VFS5011Notification.swipeRequested:
-                // Drop leftovers first, and only then post the new prompt,
-                // so the clean-up can never remove the prompt itself.
-                self.clearSwipeNotifications(after: 0) { [weak self] in
-                    self?.fireLocalNotification(
-                        title: "Hackintosh Touch-ID",
-                        body: "Swipe to authenticate! 🔻"
-                    )
-                }
+                self.authEpisodeOpen = true
+                self.authOverlay.show(.waiting)
 
             case VFS5011Notification.swipeSuccess:
-                self.fireLocalNotification(
-                    title: "Hackintosh Touch-ID",
-                    body: "Authentication successful! ✅"
-                )
-                self.clearSwipeNotifications(after: 10.0)
+                self.authEpisodeOpen = false
+                self.authOverlay.show(.success)
 
             case VFS5011Notification.swipeFailed:
-                self.fireLocalNotification(
-                    title: "Hackintosh Touch-ID",
-                    body: "Authentication failed, try swiping better ❌"
-                )
-                self.clearSwipeNotifications(after: 10.0)
+                self.authOverlay.show(.notRecognized, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeWeak:
-                self.clearSwipeNotifications(after: 0) { [weak self] in
-                    self?.fireLocalNotification(
-                        title: "Hackintosh Touch-ID",
-                        body: "Swipe was too weak, please try again 🔻"
-                    )
-                    self?.clearSwipeNotifications(after: 10.0)
-                }
+                self.authOverlay.show(.incomplete, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeLockout:
-                // Same ordering as the prompt: clear the leftover "try
-                // swiping better" banner first, then post the final one.
-                self.clearSwipeNotifications(after: 0) { [weak self] in
-                    self?.fireLocalNotification(
-                        title: "Hackintosh Touch-ID",
-                        body: "Authentication failed, use your password ❌"
-                    )
-                    self?.clearSwipeNotifications(after: 10.0)
-                }
+                self.authEpisodeOpen = false
+                self.authOverlay.show(.lockout)
+
+            case VFS5011Notification.swipeCancelled:
+                self.authEpisodeOpen = false
+                self.authOverlay.show(.cancelled)
 
             case VFS5011Notification.scanningEnabled:
                 self.scanningEnabled = true
 
             case VFS5011Notification.scanningDisabled:
                 self.scanningEnabled = false
+                self.authEpisodeOpen = false
+                self.authOverlay.hide()
 
             case VFS5011Notification.lockswipeEnabled:
                 self.lockSwipeEnabled = true
@@ -985,6 +978,243 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             default:
                 break
             }
+        }
+    }
+}
+
+
+// MARK: - Auth overlay (top middle, above every app)
+
+// The five cards from the design: Waiting (white), Authenticated (green), Not recognized (red),
+// Incomplete swipe (yellow) and Cancelled (cyan, with a close button). Lockout reuses the red style.
+enum AuthOverlayKind {
+    case waiting, success, notRecognized, incomplete, lockout, cancelled
+
+    var title: String {
+        switch self {
+        case .waiting:       return "Waiting for fingerprint"
+        case .success:       return "Authenticated"
+        case .notRecognized: return "Not recognized"
+        case .incomplete:    return "Incomplete swipe"
+        case .lockout:       return "Too many attempts, use your password"
+        case .cancelled:     return "Cancelled"
+        }
+    }
+    var subtitle: String? { self == .cancelled ? "Authentication cancelled." : nil }
+    var symbol: String {
+        switch self {
+        case .waiting, .cancelled: return "touchid"
+        case .success:             return "checkmark.circle"
+        case .notRecognized, .lockout: return "xmark.circle"
+        case .incomplete:          return "exclamationmark.circle"
+        }
+    }
+    var accent: NSColor {
+        switch self {
+        case .waiting:       return NSColor(calibratedWhite: 0.94, alpha: 1)
+        case .success:       return NSColor(calibratedRed: 0.20, green: 0.80, blue: 0.45, alpha: 1)
+        case .notRecognized, .lockout: return NSColor(calibratedRed: 0.93, green: 0.30, blue: 0.32, alpha: 1)
+        case .incomplete:    return NSColor(calibratedRed: 0.96, green: 0.78, blue: 0.20, alpha: 1)
+        case .cancelled:     return NSColor(calibratedRed: 0.20, green: 0.78, blue: 0.90, alpha: 1)
+        }
+    }
+    // Seconds on screen. nil = stays until the next event (Waiting).
+    var lifetime: TimeInterval? {
+        switch self {
+        case .waiting:       return nil
+        case .success:       return 1.6
+        case .notRecognized, .incomplete: return 2.2
+        case .lockout:       return 4.0
+        case .cancelled:     return 4.0
+        }
+    }
+}
+
+// Draws one card: dark rounded rectangle, 1.5 pt accent border, icon on the left, text on the right.
+final class AuthCardView: NSView {
+    var onClose: (() -> Void)?
+    private let kind: AuthOverlayKind
+
+    init(kind: AuthOverlayKind) {
+        self.kind = kind
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedWhite: 0.10, alpha: 0.97).cgColor
+        layer?.borderColor = kind.accent.cgColor
+        layer?.borderWidth = 1.5
+        layer?.cornerRadius = kind.subtitle == nil ? 16 : 18
+
+        let icon = NSImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        if let img = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: kind.title) {
+            let cfg = NSImage.SymbolConfiguration(pointSize: kind.subtitle == nil ? 17 : 26, weight: .regular)
+            icon.image = img.withSymbolConfiguration(cfg)
+        }
+        icon.contentTintColor = kind.accent
+        addSubview(icon)
+
+        let title = NSTextField(labelWithString: kind.title)
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.textColor = NSColor(calibratedWhite: 0.97, alpha: 1)
+        title.font = NSFont.systemFont(ofSize: kind.subtitle == nil ? 14 : 16, weight: kind.subtitle == nil ? .medium : .semibold)
+        title.lineBreakMode = .byTruncatingTail
+
+        let stack = NSStackView(views: [title])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        if let sub = kind.subtitle {
+            let subtitle = NSTextField(labelWithString: sub)
+            subtitle.textColor = NSColor(calibratedWhite: 0.70, alpha: 1)
+            subtitle.font = NSFont.systemFont(ofSize: 12.5, weight: .regular)
+            stack.addArrangedSubview(subtitle)
+        }
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        if kind == .cancelled {
+            let close = NSButton(title: "", target: self, action: #selector(closeTapped))
+            close.translatesAutoresizingMaskIntoConstraints = false
+            close.isBordered = false
+            close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+            close.contentTintColor = kind.accent
+            addSubview(close)
+            NSLayoutConstraint.activate([
+                close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                close.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+                close.widthAnchor.constraint(equalToConstant: 20),
+                close.heightAnchor.constraint(equalToConstant: 20),
+                stack.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -8),
+            ])
+        } else {
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -18).isActive = true
+        }
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(kind.subtitle.map { "\(kind.title). \($0)" } ?? kind.title)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    @objc private func closeTapped() { onClose?() }
+
+    // Card size, measured from the text so it never depends on layout timing. Floors keep the
+    // short ones looking like the design.
+    var preferredSize: NSSize {
+        let hasSub = kind.subtitle != nil
+        let titleFont = NSFont.systemFont(ofSize: hasSub ? 16 : 14, weight: hasSub ? .semibold : .medium)
+        var textW = (kind.title as NSString).size(withAttributes: [.font: titleFont]).width
+        if let sub = kind.subtitle {
+            let subW = (sub as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.5)]).width
+            textW = max(textW, subW)
+        }
+        let iconW: CGFloat = hasSub ? 30 : 20
+        let closeW: CGFloat = hasSub ? 34 : 0
+        let width = ceil(16 + iconW + 12 + textW + 18 + closeW)
+        return hasSub ? NSSize(width: max(272, width), height: 80) : NSSize(width: max(250, width), height: 50)
+    }
+}
+
+// One borderless panel, reused. Level is the assistive-technology window level, which sits above
+// normal windows, full-screen apps and the menu bar, so it needs no notification permission.
+final class AuthOverlay {
+    private var panel: NSPanel?
+    private var hideWork: DispatchWorkItem?
+    private let waitingSafetySeconds: TimeInterval = 90 // never leave a stale Waiting card up
+
+    private func makePanel() -> NSPanel {
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 50),
+                        styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.becomesKeyOnlyIfNeeded = true
+        p.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        p.isReleasedWhenClosed = false
+        return p
+    }
+
+    // Shows a card. thenWaiting: after a timed card (a failed or weak attempt) go back to Waiting,
+    // because the sensor is still listening.
+    func show(_ kind: AuthOverlayKind, thenWaiting: Bool = false) {
+        DispatchQueue.main.async { [weak self] in self?.present(kind, thenWaiting: thenWaiting) }
+    }
+
+    func hide() {
+        DispatchQueue.main.async { [weak self] in self?.dismiss() }
+    }
+
+    private func present(_ kind: AuthOverlayKind, thenWaiting: Bool) {
+        hideWork?.cancel()
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
+
+        let card = AuthCardView(kind: kind)
+        card.onClose = { [weak self] in self?.dismiss() }
+        let size = card.preferredSize
+        card.frame = NSRect(origin: .zero, size: size)
+        panel.contentView = card
+        panel.ignoresMouseEvents = (kind != .cancelled) // only the Cancelled card has a button
+
+        // Top middle of the screen that has the menu bar, just under it.
+        let screen = NSScreen.screens.first ?? NSScreen.main
+        let area = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let x = area.midX - size.width / 2
+        let y = area.maxY - size.height - 10
+        let wasVisible = panel.isVisible && panel.alphaValue > 0.01
+        panel.setFrame(NSRect(x: x, y: wasVisible ? y : y + 8, width: size.width, height: size.height), display: true)
+        if !wasVisible { panel.alphaValue = 0 }
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            panel.animator().alphaValue = 1
+            panel.animator().setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        }
+
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: kind.subtitle ?? kind.title])
+
+        let life = kind.lifetime ?? waitingSafetySeconds
+        let work = DispatchWorkItem { [weak self] in
+            if thenWaiting { self?.present(.waiting, thenWaiting: false) } else { self?.dismiss() }
+        }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + life, execute: work)
+    }
+
+    private func dismiss() {
+        hideWork?.cancel()
+        hideWork = nil
+        guard let panel = panel, panel.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.18
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak panel] in
+            // A newer card may have been shown while this one faded out.
+            if let panel = panel, panel.alphaValue < 0.01 { panel.orderOut(nil) }
+        })
+    }
+
+    // Design preview: every card for a few seconds each.
+    func runDemo() {
+        let steps: [(AuthOverlayKind, TimeInterval)] = [
+            (.waiting, 0), (.incomplete, 3), (.notRecognized, 6), (.success, 9), (.cancelled, 12), (.lockout, 17)
+        ]
+        for (kind, delay) in steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1 + delay) { [weak self] in self?.show(kind) }
         }
     }
 }
