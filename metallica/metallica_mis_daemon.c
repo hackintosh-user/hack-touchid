@@ -336,6 +336,76 @@ int metallica_mis_read_bulk_data(unsigned char *out_buf, size_t out_buf_size) {
 }
 
 /*
+ * Armed bulk read. The 138a:0097 starts streaming image lines as soon as it
+ * accepts the cmd_02 capture command, and only buffers a few dozen lines. If
+ * the host posts its read after the command round trip, the first lines are
+ * gone (a Nov 7 log lost 20 lines at the start and 1 more later). So the read
+ * is posted BEFORE the command: arm, send cmd_02, finish. libusb handles the
+ * async completion while the synchronous command transfers pump events.
+ */
+static struct libusb_transfer *g_armed_xfer = NULL;
+static volatile int g_armed_done = 0;
+
+static void LIBUSB_CALL mmis_armed_read_cb(struct libusb_transfer *x) {
+    *(volatile int *)x->user_data = 1;
+}
+
+static int mmis_arm_bulk_read(unsigned char *out_buf, size_t out_buf_size) {
+    if (!g_handle || g_armed_xfer) return -1;
+    struct libusb_transfer *x = libusb_alloc_transfer(0);
+    if (!x) return -1;
+    g_armed_done = 0;
+    libusb_fill_bulk_transfer(x, g_handle, METALLICA_MIS_IN_ENDPOINT_DATA, out_buf,
+                              (int)out_buf_size, mmis_armed_read_cb, (void *)&g_armed_done, 10000);
+    int r = libusb_submit_transfer(x);
+    if (r != 0) {
+        fprintf(stderr, "metallica_mis: arming the bulk read failed (libusb error %d: %s)\n",
+                r, libusb_error_name(r));
+        libusb_free_transfer(x);
+        return -1;
+    }
+    g_armed_xfer = x;
+    mmis_dbg("usb: bulk read on 0x%02x armed before the capture command", METALLICA_MIS_IN_ENDPOINT_DATA);
+    return 0;
+}
+
+/* Wait for the armed read to finish. Returns bytes read, or -1. */
+static int mmis_finish_bulk_read(void) {
+    struct libusb_transfer *x = g_armed_xfer;
+    if (!x) return -1;
+    struct timeval tv = { 0, 100000 };
+    while (!g_armed_done) {
+        int r = libusb_handle_events_timeout_completed(g_ctx, &tv, (int *)&g_armed_done);
+        if (r != 0 && r != LIBUSB_ERROR_TIMEOUT && r != LIBUSB_ERROR_INTERRUPTED) break;
+    }
+    int ret = -1;
+    if (g_armed_done && x->status == LIBUSB_TRANSFER_COMPLETED) {
+        ret = x->actual_length;
+        mmis_dbg("usb: bulk read on 0x%02x (data endpoint) got %d bytes", METALLICA_MIS_IN_ENDPOINT_DATA, ret);
+        mmis_dbg_hex("usb: bulk data", x->buffer, (size_t)ret);
+    } else {
+        fprintf(stderr, "metallica_mis_read_bulk_data: armed bulk read failed (transfer status %d)\n",
+                g_armed_done ? (int)x->status : -1);
+    }
+    libusb_free_transfer(x);
+    g_armed_xfer = NULL;
+    return ret;
+}
+
+/* Abandon the armed read (the command failed). Cancels and drains. */
+static void mmis_cancel_armed_read(void) {
+    struct libusb_transfer *x = g_armed_xfer;
+    if (!x) return;
+    if (!g_armed_done) {
+        libusb_cancel_transfer(x);
+        struct timeval tv = { 0, 100000 };
+        for (int i = 0; i < 20 && !g_armed_done; i++)
+            libusb_handle_events_timeout_completed(g_ctx, &tv, (int *)&g_armed_done);
+    }
+    if (g_armed_done) { libusb_free_transfer(x); g_armed_xfer = NULL; }
+}
+
+/*
  * metallica_mis_wait_interrupt() -- port of python-validity's
  * Usb.wait_int(): read the sensor's interrupt endpoint (EP 0x83) in
  * 100 ms slices until something arrives. Capture and enroll are driven
@@ -1060,6 +1130,81 @@ int metallica_mis_send_init(void) {
     return 0;
 }
 
+/*
+ * Calibration lines carry a counter in the header: byte 0 = 0x01, byte 1 = 0xfe,
+ * byte 2 = row in frame (1..lines_per_frame), byte 3 = frame number (1..N). A
+ * final trailer line (01 01 00 00) follows the data. When the capture is not
+ * exactly N full frames, rebuild the N x lines_per_frame layout from those
+ * counters instead of trusting the byte count. Missing rows are copied from
+ * the same row of another frame. Only used for the flat (type 0xdb) average.
+ * Returns false if the rebuilt frames the average actually reads are not
+ * complete.
+ */
+static bool mmis_realign_flat_capture(const mmis_sensor_profile_t *prof, size_t lines_per_frame,
+                                      const uint8_t *raw, size_t raw_len,
+                                      uint8_t *out, size_t out_max, size_t *out_len) {
+    size_t bpl = prof->bytes_per_line;
+    size_t nframes = prof->calibration_frames;
+    size_t total_lines = lines_per_frame * nframes;
+    if (!bpl || bpl < 8 || !lines_per_frame || !nframes || total_lines * bpl > out_max) return false;
+    if (raw_len < bpl || raw[0] != 0x01 || raw[1] != 0xfe) return false; /* not the counted layout */
+
+    static uint8_t have[1024];
+    if (total_lines > sizeof(have)) return false;
+    memset(have, 0, total_lines);
+    memset(out, 0, total_lines * bpl);
+
+    size_t placed = 0, ignored = 0;
+    for (size_t k = 0; (k + 1) * bpl <= raw_len; k++) {
+        const uint8_t *ln = raw + k * bpl;
+        size_t row = ln[2], frame = ln[3];
+        if (ln[0] != 0x01 || ln[1] != 0xfe || row < 1 || row > lines_per_frame ||
+            frame < 1 || frame > nframes) { ignored++; continue; }
+        size_t idx = (frame - 1) * lines_per_frame + (row - 1);
+        if (have[idx]) { ignored++; continue; }
+        memcpy(out + idx * bpl, ln, bpl);
+        have[idx] = 1;
+        placed++;
+    }
+
+    size_t missing_used = 0;
+    for (size_t f = 0; f < nframes; f++) {
+        for (size_t r = 0; r < lines_per_frame; r++) {
+            size_t idx = f * lines_per_frame + r;
+            if (have[idx]) continue;
+            for (size_t g = 1; g < nframes; g++) { /* borrow the same row from another frame */
+                size_t other = ((f + g) % nframes) * lines_per_frame + r;
+                if (have[other]) { memcpy(out + idx * bpl, out + other * bpl, bpl); break; }
+            }
+            if (f >= 2) missing_used++; /* frames 3.. are the ones average() reads */
+        }
+    }
+    fprintf(stderr, "metallica_mis: capture realigned by line counter: %zu of %zu lines placed, "
+                    "%zu ignored (trailer or repeats), %zu missing in the frames used\n",
+            placed, total_lines, ignored, missing_used);
+    if (missing_used != 0) return false;
+    *out_len = total_lines * bpl;
+    return true;
+}
+
+/* average() with a safety net: a capture of exactly the expected size is used
+ * as is; any other size is realigned by line counter first (flat profiles only). */
+static bool mmis_average_capture(const mmis_sensor_profile_t *prof, const uint8_t *raw, size_t raw_len,
+                                 size_t lines_per_frame, uint8_t *out, size_t out_max, size_t *out_len) {
+    size_t expected = lines_per_frame * prof->bytes_per_line * (size_t)prof->calibration_frames;
+    bool flat = lines_per_frame / prof->lines_per_calibration_data <= 1;
+    if (flat && raw_len != expected) {
+        static uint8_t aligned[262144];
+        size_t aligned_len = 0;
+        fprintf(stderr, "metallica_mis: capture is %zu bytes, expected %zu; rebuilding frames from line counters\n",
+                raw_len, expected);
+        if (!mmis_realign_flat_capture(prof, lines_per_frame, raw, raw_len, aligned, sizeof(aligned), &aligned_len))
+            return false;
+        return mmis_profile_average(prof, aligned, aligned_len, lines_per_frame, out, out_max, out_len);
+    }
+    return mmis_profile_average(prof, raw, raw_len, lines_per_frame, out, out_max, out_len);
+}
+
 /* [DIAGNOSTIC, Nov 7] The calibration capture failed to average (a 138a:0097 returned 131176 bytes,
  * 863 lines of 152, where 6 frames x 144 lines = 864 were expected). Keep exactly what the sensor
  * sent, plus the numbers we expected and every line's 8-byte header, so the real frame layout can
@@ -1224,6 +1369,7 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
          * (real prog/factory bits, current calib_data length). */
         mmis_hexdump("outgoing cmd_02", cmd_buf, cmd_len);
 
+        int armed = (mmis_arm_bulk_read(raw_buf, sizeof(raw_buf)) == 0);
         int n = metallica_mis_tls_cmd(tls, cmd_buf, cmd_len, reply, sizeof(reply));
         if (n >= 0) {
             mmis_hexdump("cmd_02 reply", reply, (size_t)n);
@@ -1231,18 +1377,20 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
             fprintf(stderr, "metallica_mis: cmd_02 transport error, n=%d\n", n);
         }
         if (n < 0 || assert_status(reply, n) != 0) {
+            if (armed) mmis_cancel_armed_read();
             fprintf(stderr, "metallica_mis_do_calibrate: cmd_02 send failed on iteration %d\n", i);
             return -1;
         }
 
-        int raw_len = metallica_mis_read_bulk_data(raw_buf, sizeof(raw_buf));
+        int raw_len = armed ? mmis_finish_bulk_read()
+                            : metallica_mis_read_bulk_data(raw_buf, sizeof(raw_buf));
         if (raw_len < 0) {
             fprintf(stderr, "metallica_mis_do_calibrate: read_bulk_data() failed on iteration %d\n", i);
             return -1;
         }
 
         size_t cooked_len = 0;
-        if (!mmis_profile_average(prof, raw_buf, (size_t)raw_len, lines_per_frame,
+        if (!mmis_average_capture(prof, raw_buf, (size_t)raw_len, lines_per_frame,
                                   cooked_buf, sizeof(cooked_buf), &cooked_len)) {
             fprintf(stderr, "metallica_mis_do_calibrate: average() failed on iteration %d\n", i);
             mmis_dump_calibration_capture(prof, lines_per_frame, raw_buf, (size_t)raw_len, "calibration iteration");
@@ -1281,20 +1429,23 @@ int metallica_mis_do_calibrate_ex(metallica_mis_tls_t *tls,
         return -1;
     }
 
+    int armed = (mmis_arm_bulk_read(raw_buf, sizeof(raw_buf)) == 0);
     int n = metallica_mis_tls_cmd(tls, cmd_buf, cmd_len, reply, sizeof(reply));
     if (n < 0 || assert_status(reply, n) != 0) {
+        if (armed) mmis_cancel_armed_read();
         fprintf(stderr, "metallica_mis_do_calibrate: cmd_02 send failed for blank image\n");
         return -1;
     }
 
-    int raw_len = metallica_mis_read_bulk_data(raw_buf, sizeof(raw_buf));
+    int raw_len = armed ? mmis_finish_bulk_read()
+                        : metallica_mis_read_bulk_data(raw_buf, sizeof(raw_buf));
     if (raw_len < 0) {
         fprintf(stderr, "metallica_mis_do_calibrate: read_bulk_data() failed for blank image\n");
         return -1;
     }
 
     size_t cooked_len = 0;
-    if (!mmis_profile_average(prof, raw_buf, (size_t)raw_len, lines_per_frame,
+    if (!mmis_average_capture(prof, raw_buf, (size_t)raw_len, lines_per_frame,
                               cooked_buf, sizeof(cooked_buf), &cooked_len)) {
         fprintf(stderr, "metallica_mis_do_calibrate: average() failed for blank image\n");
         mmis_dump_calibration_capture(prof, lines_per_frame, raw_buf, (size_t)raw_len, "blank image");
