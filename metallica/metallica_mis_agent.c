@@ -1178,6 +1178,7 @@ static void handle_match(void) {
             }
 
             if (ok_to_type && password_valid_snapshot) {
+                vfs5011_episode_matched(); /* typing unlocks the screen: don't let that read as a cancel */
                 type_password_and_enter(password_snapshot);
                 print_timestamp();
                 printf("Typed.\n");
