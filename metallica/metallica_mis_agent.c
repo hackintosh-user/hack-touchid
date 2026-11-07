@@ -780,6 +780,7 @@ static void on_screen_locked(void) {
 }
 
 static void on_screen_unlocked(void) {
+    vfs5011_notify_swipe_cancelled(); /* no-op if a success was already announced for this episode */
     atomic_store(&g_state, STATE_IDLE);
     lockswipe_set_grace(LOCKTOUCH_GRACE_SEC); /* the unlocking finger may still be on the sensor */
     atomic_store(&g_trigger_source, TRIGGER_NONE);
@@ -843,7 +844,7 @@ static void arm_polling_for_trigger(trigger_source_t source, pid_t target_pid,
         settle_to_idle();
         atomic_store(&g_trigger_source, TRIGGER_NONE);
         if (g_trigger_secure_field) { CFRelease(g_trigger_secure_field); g_trigger_secure_field = NULL; }
-        vfs5011_notify_swipe_failed();
+        vfs5011_notify_swipe_cancelled();
         return;
     }
     pthread_detach(loader_thread);
@@ -1107,7 +1108,7 @@ static void abandon_episode(const char *why) {
     atomic_store(&g_failed_swipes, 0);
     if (g_trigger_secure_field) { CFRelease(g_trigger_secure_field); g_trigger_secure_field = NULL; }
     settle_to_idle();
-    vfs5011_notify_swipe_failed();
+    vfs5011_notify_swipe_cancelled();
 }
 
 /* The sensor said MATCH. Same safety checks and typing as the VFS5011 daemon. */
