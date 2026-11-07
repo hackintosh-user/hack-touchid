@@ -216,6 +216,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // True from "swipe requested" until a final result (success, lockout, cancelled), so a
     // failed or weak attempt can drop back to the Waiting card.
     private var authEpisodeOpen = false
+    // True if that episode began on the lock screen. macOS draws the lock screen above every app
+    // window, so there the app falls back to a Notification Center banner, as before.
+    private var authEpisodeStartedLocked = false
+    // "Cancelled" waits a moment so a success that follows an unlock can cancel it.
+    private var pendingCancel: DispatchWorkItem?
     private var clientUpdateTimer: Timer?
     private var aboutWindow: NSWindow?
     private var scanningEnabled: Bool = true {
@@ -248,6 +253,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         requestNotificationPermission()
         registerForDaemonNotifications()
         registerAsLoginItemIfNeeded()
+
+        // The lock screen covers any window, so drop the card as soon as the screen locks.
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in self?.authOverlay.hide() }
 
         // Preview for design checks: `HackintoshTouchID --overlay-demo` cycles every card.
         if CommandLine.arguments.contains("--overlay-demo") {
@@ -933,6 +943,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         )
     }
 
+    // The same flag the daemon reads: present (and true) only while the screen is locked.
+    private func isScreenLocked() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
+    }
+
+    // Unlocked: the overlay card. Locked: a Notification Center banner, because no app window can
+    // be drawn above the lock screen.
+    private func showAuth(_ kind: AuthOverlayKind, thenWaiting: Bool = false) {
+        if !isScreenLocked() {
+            authOverlay.show(kind, thenWaiting: thenWaiting)
+            return
+        }
+        authOverlay.hide()
+        let body: String
+        switch kind {
+        case .waiting:       body = "Swipe to authenticate! 🔻"
+        case .success:       body = "Authentication successful! ✅"
+        case .notRecognized: body = "Authentication failed, try swiping better ❌"
+        case .incomplete:    body = "Swipe was too weak, please try again 🔻"
+        case .lockout:       body = "Authentication failed, use your password ❌"
+        case .cancelled:     return
+        }
+        clearSwipeNotifications(after: 0) { [weak self] in
+            self?.fireLocalNotification(title: "Hackintosh Touch-ID", body: body)
+            if kind != .waiting { self?.clearSwipeNotifications(after: 10.0) }
+        }
+    }
+
     private func handleDaemonNotification(_ name: String) {
         // Distributed notifications can arrive on a background thread.
         DispatchQueue.main.async { [weak self] in
@@ -940,26 +979,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
             switch name {
             case VFS5011Notification.swipeRequested:
+                self.pendingCancel?.cancel()
                 self.authEpisodeOpen = true
-                self.authOverlay.show(.waiting)
+                self.authEpisodeStartedLocked = self.isScreenLocked()
+                self.showAuth(.waiting)
 
             case VFS5011Notification.swipeSuccess:
+                self.pendingCancel?.cancel()
                 self.authEpisodeOpen = false
-                self.authOverlay.show(.success)
+                self.showAuth(.success)
 
             case VFS5011Notification.swipeFailed:
-                self.authOverlay.show(.notRecognized, thenWaiting: self.authEpisodeOpen)
+                self.showAuth(.notRecognized, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeWeak:
-                self.authOverlay.show(.incomplete, thenWaiting: self.authEpisodeOpen)
+                self.showAuth(.incomplete, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeLockout:
+                self.pendingCancel?.cancel()
                 self.authEpisodeOpen = false
-                self.authOverlay.show(.lockout)
+                self.showAuth(.lockout)
 
             case VFS5011Notification.swipeCancelled:
+                self.pendingCancel?.cancel()
+                let startedLocked = self.authEpisodeStartedLocked
                 self.authEpisodeOpen = false
-                self.authOverlay.show(.cancelled)
+                if startedLocked {
+                    // Unlocked with the password: nothing to show, just clear the leftover banner.
+                    self.authOverlay.hide()
+                    self.clearSwipeNotifications(after: 0)
+                } else {
+                    let work = DispatchWorkItem { [weak self] in self?.authOverlay.show(.cancelled) }
+                    self.pendingCancel = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+                }
 
             case VFS5011Notification.scanningEnabled:
                 self.scanningEnabled = true
