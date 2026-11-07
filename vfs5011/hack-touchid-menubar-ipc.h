@@ -146,5 +146,8 @@ void vfs5011_notify_swipe_lockout(void);   /* too many failed swipes in a row: t
  * Only posts if an episode is still open, i.e. no success or lockout was announced for it, so it is safe to
  * call from every place an episode ends. */
 void vfs5011_notify_swipe_cancelled(void);
+/* Call the moment a match is confirmed, BEFORE the password is typed: typing unlocks the screen, and the
+ * unlock handler would otherwise report the episode as cancelled before the success event is posted. */
+void vfs5011_episode_matched(void);
 
 #endif /* VFS5011_MENUBAR_IPC_H */

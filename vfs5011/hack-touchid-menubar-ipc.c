@@ -161,6 +161,10 @@ void vfs5011_notify_swipe_cancelled(void) {
                                           NULL, NULL, TRUE);
 }
 
+void vfs5011_episode_matched(void) {
+    atomic_store(&g_episode_open, false);
+}
+
 void vfs5011_notify_swipe_lockout(void) {
     atomic_store(&g_episode_open, false);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDistributedCenter(),
