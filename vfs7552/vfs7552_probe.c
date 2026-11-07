@@ -11,7 +11,10 @@
  *   3. RomInfo (0x01), 0x19 and the fwext info query (0x43 0x02) get
  *      answered on bulk endpoints 0x01 (OUT) / 0x81 (IN), the same
  *      endpoints python-validity's usb.py uses for every Prometheus-family
- *      sensor.
+ *      sensor;
+ *   4. identify sensor (0x75), flash layout (0x3e) and whether the pairing
+ *      partition already holds data (16 bytes read, only erased/filled is
+ *      reported, never the bytes).
  * A tester's log of this is enough to decide whether 0092 really speaks
  * the same protocol as the Metallica MIS / Prometheus backend.
  */
@@ -99,10 +102,12 @@ static void print_config(libusb_device *dev, uint8_t *ep_out, uint8_t *ep_in) {
 }
 
 /* One command round trip. Returns the reply length (>= 0), or a negative
- * libusb error code. */
-static int probe_cmd(libusb_device_handle *h, uint8_t ep_out, uint8_t ep_in,
-                     const unsigned char *cmd, int cmd_len,
-                     unsigned char *rsp, int rsp_max, const char *name) {
+ * libusb error code. quiet = 1 prints the command and the status word only,
+ * never the reply bytes (used for the flash partition read, which can hold
+ * pairing keys that must not end up in a tester's log). */
+static int probe_exchange(libusb_device_handle *h, uint8_t ep_out, uint8_t ep_in,
+                          const unsigned char *cmd, int cmd_len,
+                          unsigned char *rsp, int rsp_max, const char *name, int quiet) {
     int sent = 0, got = 0;
     printf("\n> %s\n", name);
     dump_hex("  sent", cmd, cmd_len);
@@ -116,7 +121,8 @@ static int probe_cmd(libusb_device_handle *h, uint8_t ep_out, uint8_t ep_in,
         printf("  read failed: %s\n", libusb_error_name(r));
         return r;
     }
-    dump_hex("  reply", rsp, got);
+    if (quiet) printf("  reply: %d bytes (contents not shown)\n", got);
+    else dump_hex("  reply", rsp, got);
     if (got >= 3 && rsp[0] == 0x15 && rsp[1] == 0x03 && rsp[2] == 0x03) {
         printf("  note: this looks like a TLS alert, the sensor still holds an old session.\n"
                "        Reboot or replug the sensor (shut down fully, not just restart) and run again.\n");
@@ -125,6 +131,69 @@ static int probe_cmd(libusb_device_handle *h, uint8_t ep_out, uint8_t ep_in,
         printf("  status word: 0x%04x%s\n", status, status == 0 ? " (OK)" : "");
     }
     return got;
+}
+
+static int probe_cmd(libusb_device_handle *h, uint8_t ep_out, uint8_t ep_in,
+                     const unsigned char *cmd, int cmd_len,
+                     unsigned char *rsp, int rsp_max, const char *name) {
+    return probe_exchange(h, ep_out, ep_in, cmd, cmd_len, rsp, rsp_max, name, 0);
+}
+
+static unsigned le16(const unsigned char *p) { return (unsigned)p[0] | ((unsigned)p[1] << 8); }
+static unsigned le32(const unsigned char *p) { return le16(p) | (le16(p + 2) << 16); }
+
+/* Sensor identity (0x75), flash layout (0x3e) and whether the pairing
+ * partition holds data. All three are read-only queries that python-validity
+ * sends before any pairing. Failures here never change the probe's result. */
+static void probe_identity_and_flash(libusb_device_handle *h, uint8_t ep_out, uint8_t ep_in,
+                                     unsigned char *rsp, int rsp_max) {
+    static const unsigned char cmd_id[]    = { 0x75 };
+    static const unsigned char cmd_flash[] = { 0x3e };
+
+    int got = probe_cmd(h, ep_out, ep_in, cmd_id, sizeof(cmd_id), rsp, rsp_max, "identify sensor (0x75)");
+    if (got >= 2 + 8 && le16(rsp) == 0) {
+        printf("  identify: zeroes=0x%08x minor=0x%04x major=0x%04x\n",
+               le32(rsp + 2), le16(rsp + 6), le16(rsp + 8));
+    }
+
+    got = probe_cmd(h, ep_out, ep_in, cmd_flash, sizeof(cmd_flash), rsp, rsp_max, "flash info (0x3e)");
+    unsigned part1_access = 0xffff;
+    int have_part1 = 0;
+    if (got >= 2 + 0xe && le16(rsp) == 0) {
+        const unsigned char *p = rsp + 2;
+        unsigned pcnt = le16(p + 12);
+        printf("  flash: jedec=%04x:%04x blocks=%u blocksize=%u partitions=%u\n",
+               le16(p), le16(p + 2), le16(p + 4), le16(p + 8), pcnt);
+        for (unsigned i = 0; i < pcnt && (int)(2 + 0xe + (i + 1) * 0xc) <= got; i++) {
+            const unsigned char *q = p + 0xe + i * 0xc;
+            printf("    partition id=0x%02x type=0x%02x access=0x%04x offset=0x%08x size=0x%08x\n",
+                   q[0], q[1], le16(q + 2), le32(q + 4), le32(q + 8));
+            if (q[0] == 1) { have_part1 = 1; part1_access = le16(q + 2); }
+        }
+    }
+
+    /* Partition 1 is where python-validity keeps the pairing data (read_tls_flash).
+     * Read 16 bytes, say only whether it looks erased or filled. Skipped when the
+     * partition table says it cannot be read without a TLS session. */
+    if (have_part1 && part1_access == 7) {
+        unsigned char cmd_rd[16];
+        cmd_rd[0] = 0x40; cmd_rd[1] = 1; cmd_rd[2] = 1; cmd_rd[3] = 0; cmd_rd[4] = 0;
+        cmd_rd[5] = 0; cmd_rd[6] = 0; cmd_rd[7] = 0; cmd_rd[8] = 0;
+        cmd_rd[9] = 0x10; cmd_rd[10] = 0; cmd_rd[11] = 0; cmd_rd[12] = 0;
+        got = probe_exchange(h, ep_out, ep_in, cmd_rd, 13, rsp, rsp_max,
+                             "read 16 bytes of partition 1 (pairing data)", 1);
+        if (got >= 8 + 16 && le16(rsp) == 0) {
+            int all_ff = 1, all_00 = 1;
+            for (int i = 0; i < 16; i++) {
+                if (rsp[8 + i] != 0xff) all_ff = 0;
+                if (rsp[8 + i] != 0x00) all_00 = 0;
+            }
+            printf("  pairing partition looks: %s\n",
+                   all_ff ? "erased (never paired)" : all_00 ? "zeroed" : "filled (already paired by something)");
+        }
+    } else if (have_part1) {
+        printf("\n(partition 1 needs a TLS session to read, skipped)\n");
+    }
 }
 
 int vfs7552_probe_run(int debug) {
@@ -219,6 +288,8 @@ int vfs7552_probe_run(int debug) {
     probe_cmd(h, ep_out, ep_in, cmd_19, sizeof(cmd_19), rsp, PROBE_IN_BUF_SIZE, "query (0x19)");
     probe_cmd(h, ep_out, ep_in, cmd_fw, sizeof(cmd_fw), rsp, PROBE_IN_BUF_SIZE,
               "fwext info (0x43 0x02)");
+
+    probe_identity_and_flash(h, ep_out, ep_in, rsp, PROBE_IN_BUF_SIZE);
 
     printf("\nprobe finished, result: %s\n",
            rc == 0 ? "sensor answered RomInfo" : "sensor did NOT answer RomInfo as expected");
