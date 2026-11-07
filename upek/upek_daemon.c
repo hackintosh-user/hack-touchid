@@ -34,6 +34,15 @@
  * has actually confirmed it works, same policy this project already
  * follows for Metallica MIS.
  *
+ * Nov 6 2026: second backend for bcdDevice 2 units (the tester's 147e:2016 reports
+ * bcdDevice 0002). libfprint splits 147e:2016 by bcdDevice: upeksonly (register
+ * protocol, everything above) claims bcdDevice 1, upektc_img (CRC framed "Ciao"
+ * commands on bulk 0x02 / 0x81) claims bcdDevice 2. The register protocol stalls
+ * on a bcdDevice 2 unit, which is what the first hardware reports showed.
+ * upek_capture_fingerprint_image() picks the backend from bcdDevice at runtime,
+ * see "bcdDevice 2 backend" below. Ported from libfprint's upektc_img.c
+ * (Copyright 2013 Vasily Khoruzhick, LGPL 2.1). Not yet run on hardware.
+ *
  * Build (once wired into the client -- for now this compiles
  * standalone via upek_capture_test_main() below for a first
  * hardware smoke test):
@@ -47,6 +56,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <time.h>
 #include <libusb.h>
 
 #include "upek_proto.h"
@@ -68,6 +78,9 @@ static int g_upek_rd_layout = 0;
 /* Oct 24 (probe v2): which recipient bits are added to bmRequestType. 0 = device (libfprint),
  * 1 = interface, 2 = endpoint. Only the probe changes this, and it keeps whichever works. */
 static int g_upek_recip = 0;
+/* Runtime image width. 288 for the bcdDevice 1 register protocol, set from the sensor's own
+ * get_info reply on bcdDevice 2 units (see upektc_activate()). */
+static int g_upek_img_width = UPEK_IMG_WIDTH;
 #define UPEK_WR_REQTYPE (UPEK_CTRL_WRITE_REQTYPE | g_upek_recip)
 #define UPEK_RD_REQTYPE (UPEK_CTRL_READ_REQTYPE | g_upek_recip)
 
@@ -715,6 +728,466 @@ out:
     return result;
 }
 
+
+/* ---- bcdDevice 2 backend: libfprint upektc_img protocol (Nov 6) ----
+ *
+ * Synchronous port of upektc_img.c: CRC framed commands on bulk OUT 0x02, replies on bulk
+ * IN 0x81, 64 byte reads. Everything it learns is logged to stderr and to
+ * UPEK_PROBE_REPORT_PATH so a tester can send one file back. */
+
+#define UPEKTC_EP_OUT 0x02
+#define UPEKTC_EP_IN  0x81
+#define UPEKTC_TIMEOUT_MS 4000
+#define UPEKTC_MAX_CMD 64
+#define UPEKTC_MAX_RESP 2052
+#define UPEKTC_SHORT_RESP 64
+#define UPEKTC_SWIPE_DEADLINE_S 60
+#define UPEKTC_MAX_RETRIES 10
+
+/* Command templates, copied byte for byte from libfprint's upek_proto.h. The seq nibble
+ * (high nibble of byte 5) and the trailing CRC are rewritten by upektc_send(). */
+static const unsigned char upektc_init_1[] = {
+    'C', 'i', 'a', 'o', 0x04, 0x00, 0x0d,
+    0x01, 0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0x01, 0x00, 0x00, 0x00, 0xda, 0xc1
+};
+static const unsigned char upektc_init_2[] = {
+    0x43, 0x69, 0x61, 0x6f, 0x07, 0x00, 0x01, 0x01, 0x3d, 0x72
+};
+static const unsigned char upektc_init_3[] = {
+    'C', 'i', 'a', 'o', 0x04, 0x00, 0x0d,
+    0x01, 0x00, 0xbc, 0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0x01, 0x00, 0x00, 0x00, 0x55, 0x2f
+};
+static const unsigned char upektc_init_4[] = {
+    'C', 'i', 'a', 'o', 0x00, 0x00, 0x07,
+    0x28, 0x04, 0x00, 0x00, 0x00, 0x06, 0x04, 0xc0, 0xd6
+};
+static const unsigned char upektc_deinit[] = {
+    'C', 'i', 'a', 'o', 0x07, 0x00, 0x01, 0x01, 0x3d, 0x72
+};
+/* Swipe sensors wait for an acceptable finger, area sensors wait for a press. */
+static const unsigned char upektc_init_capture[] = {
+    'C', 'i', 'a', 'o', 0x00, 0x00, 0x0e, 0x28, 0x0b, 0x00, 0x00, 0x00, 0x0e, 0x02,
+    0xfe, 0xff, 0xff, 0xff, 0x02, 0x00, 0x02, 0x25, 0xa9
+};
+static const unsigned char upektc_init_capture_press[] = {
+    'C', 'i', 'a', 'o', 0x00, 0x00, 0x0e, 0x28, 0x0b, 0x00, 0x00, 0x00, 0x0e, 0x02,
+    0xfe, 0xff, 0xff, 0xff, 0x02, 0x01, 0x02, 0x14, 0x9a
+};
+static const unsigned char upektc_ack_00_28[] = {
+    'C', 'i', 'a', 'o', 0x00, 0x80, 0x08, 0x28, 0x05, 0x00, 0x00, 0x00, 0x00, 0x30, 0x01,
+    0x6a, 0xc4
+};
+/* No seq goes into this one, always sent with seq 0. */
+static const unsigned char upektc_ack_08[] = {
+    'C', 'i', 'a', 'o', 0x09, 0x00, 0x00, 0x91, 0x9e
+};
+static const unsigned char upektc_ack_frame[] = {
+    'C', 'i', 'a', 'o', 0x00, 0x50, 0x01, 0x30, 0xac, 0x5b
+};
+
+typedef struct {
+    unsigned char seq;
+    int area_sensor;
+    int width;          /* image size libfprint maps the reported sensor size to */
+    int height;
+    int have_geometry;
+} upektc_state_t;
+
+/* CRC-16/XMODEM (poly 0x1021, init 0, MSB first). Same result as the table in libfprint's
+ * upek_proto.c, which is the gstreamer dataprotocol CRC, without copying 256 constants. */
+static uint16_t upektc_crc16(const unsigned char *buf, size_t size) {
+    uint16_t crc = 0;
+    while (size--) {
+        crc = (uint16_t)(crc ^ (uint16_t)(*buf++ << 8));
+        for (int i = 0; i < 8; i++) {
+            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+        }
+    }
+    return crc;
+}
+
+static void upektc_rep(const char *fmt, ...) {
+    char line[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "upek: bcd2: %s\n", line);
+    if (g_upek_report) { fprintf(g_upek_report, "%s\n", line); fflush(g_upek_report); }
+}
+
+/* Logs at most the first 64 bytes of a buffer as hex. */
+static void upektc_hex(const char *label, const unsigned char *b, int n) {
+    char line[3 * UPEKTC_SHORT_RESP + 1];
+    int shown = n < UPEKTC_SHORT_RESP ? n : UPEKTC_SHORT_RESP;
+    int pos = 0;
+    for (int i = 0; i < shown; i++) {
+        pos += snprintf(line + pos, sizeof(line) - (size_t)pos, "%02x ", b[i]);
+    }
+    line[pos] = '\0';
+    upektc_rep("%s (%d bytes): %s", label, n, line);
+}
+
+/* Checks every stored CRC in the command templates against upektc_crc16(), so a copy
+ * mistake in a table shows up in the report instead of as a silent stall. */
+static int upektc_crc_selftest(void) {
+    static const struct { const char *name; const unsigned char *cmd; size_t size; } t[] = {
+        { "init_1", upektc_init_1, sizeof(upektc_init_1) },
+        { "init_2", upektc_init_2, sizeof(upektc_init_2) },
+        { "init_3", upektc_init_3, sizeof(upektc_init_3) },
+        { "init_4", upektc_init_4, sizeof(upektc_init_4) },
+        { "deinit", upektc_deinit, sizeof(upektc_deinit) },
+        { "init_capture", upektc_init_capture, sizeof(upektc_init_capture) },
+        { "init_capture_press", upektc_init_capture_press, sizeof(upektc_init_capture_press) },
+        { "ack_00_28", upektc_ack_00_28, sizeof(upektc_ack_00_28) },
+        { "ack_08", upektc_ack_08, sizeof(upektc_ack_08) },
+        { "ack_frame", upektc_ack_frame, sizeof(upektc_ack_frame) },
+    };
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        uint16_t crc = upektc_crc16(t[i].cmd + 4, t[i].size - 6);
+        uint16_t stored = (uint16_t)(t[i].cmd[t[i].size - 2] | (t[i].cmd[t[i].size - 1] << 8));
+        if (crc != stored) {
+            upektc_rep("CRC selftest: %s computed %04x, table has %04x", t[i].name, crc, stored);
+            bad++;
+        }
+    }
+    upektc_rep("CRC selftest: %d of %d command templates match", (int)(sizeof(t) / sizeof(t[0])) - bad,
+               (int)(sizeof(t) / sizeof(t[0])));
+    return bad;
+}
+
+/* Mirrors upektc_img_submit_req(): copy the template, put seq in the high nibble of byte 5,
+ * recompute the CRC (little endian, over bytes 4 to size-3), send on bulk OUT. */
+static int upektc_send(libusb_device_handle *h, const unsigned char *tmpl, size_t size, unsigned char seq) {
+    unsigned char cmd[UPEKTC_MAX_CMD];
+    int sent = 0;
+    if (size > sizeof(cmd) || size < 8) return LIBUSB_ERROR_INVALID_PARAM;
+    memcpy(cmd, tmpl, size);
+    cmd[5] = (unsigned char)((cmd[5] & 0x0f) | (unsigned char)(seq << 4));
+    uint16_t crc = upektc_crc16(cmd + 4, size - 6);
+    cmd[size - 2] = (unsigned char)(crc & 0x00ff);
+    cmd[size - 1] = (unsigned char)((crc & 0xff00) >> 8);
+    int r = libusb_bulk_transfer(h, UPEKTC_EP_OUT, cmd, (int)size, &sent, UPEKTC_TIMEOUT_MS);
+    if (r < 0) return r;
+    if (sent != (int)size) return LIBUSB_ERROR_IO;
+    return 0;
+}
+
+/* One 64 byte bulk IN read, zero length reads retried, same as the original's init and
+ * deinit reads. Returns the byte count or a negative libusb error. */
+static int upektc_read_short(libusb_device_handle *h, unsigned char *buf, int allow_timeout) {
+    int zero_len = 0;
+    for (;;) {
+        int got = 0;
+        int r = libusb_bulk_transfer(h, UPEKTC_EP_IN, buf, UPEKTC_SHORT_RESP, &got, UPEKTC_TIMEOUT_MS);
+        if (r == LIBUSB_ERROR_TIMEOUT && allow_timeout) return r;
+        if (r < 0) return r;
+        if (got > 0) return got;
+        if (++zero_len > 16) return LIBUSB_ERROR_IO;
+    }
+}
+
+/* Capture loop read: 64 bytes first, then the rest when the length field says the reply is
+ * longer (response_size = ((b5 & 0x0f) << 8) + b6 + 9, mirroring capture_read_data_cb()).
+ * A timeout while waiting for the first packet is returned as LIBUSB_ERROR_TIMEOUT so the
+ * caller can keep waiting for a finger. */
+static int upektc_read_full(libusb_device_handle *h, unsigned char *resp) {
+    int total = upektc_read_short(h, resp, 1);
+    if (total < 0) return total;
+    if (total < 7) return total;
+    int want = (((resp[5] & 0x0f) << 8) | resp[6]) + 9;
+    if (want > UPEKTC_MAX_RESP) return LIBUSB_ERROR_OVERFLOW;
+    int zero_len = 0;
+    while (total < want) {
+        int more = 0;
+        int r = libusb_bulk_transfer(h, UPEKTC_EP_IN, resp + total, UPEKTC_MAX_RESP - total, &more,
+                                     UPEKTC_TIMEOUT_MS);
+        if (r < 0) return r == LIBUSB_ERROR_TIMEOUT ? LIBUSB_ERROR_IO : r;
+        if (more == 0) {
+            if (++zero_len > 16) return LIBUSB_ERROR_IO;
+            continue;
+        }
+        total += more;
+    }
+    return total;
+}
+
+/* get_info reply (data[12] == 0x06 && data[13] == 0x14): sensor size and swipe/area type.
+ * Returns 1 when the reply was a get_info and the size is known, 0 when it was some other
+ * reply, -1 when it was a get_info with a size libfprint has no mapping for. */
+static int upektc_parse_info(const unsigned char *d, int n, upektc_state_t *st) {
+    if (n < 54 || d[12] != 0x06 || d[13] != 0x14) return 0;
+    int width = (d[51] << 8) | d[50];
+    int height = (d[53] << 8) | d[52];
+    int want_h;
+    const char *name;
+    st->area_sensor = !(d[49] & 0x80);
+    switch (width) {
+    case 256: name = "TCS1x"; want_h = 360; st->width = 192; st->height = 270; break;
+    case 208: name = "TCS2";  want_h = 288; st->width = 156; st->height = 216; break;
+    case 248: name = "TCS3";  want_h = 360; st->width = 186; st->height = 270; break;
+    case 192: name = "TCS4x"; want_h = 512; st->width = 144; st->height = 384; break;
+    case 144: name = "TCS5x"; want_h = 512; st->width = 108; st->height = 384; break;
+    default:
+        upektc_rep("get_info: unknown sensor size %d x %d (flags byte 0x%02x)", width, height, d[49]);
+        return -1;
+    }
+    upektc_rep("get_info: sensor %s, reported %d x %d, %s sensor, image will be %d x %d",
+               name, width, height, st->area_sensor ? "area" : "swipe", st->width, st->height);
+    if (height != want_h) {
+        upektc_rep("get_info: warning, libfprint expects height %d for this width", want_h);
+    }
+    st->have_geometry = 1;
+    return 1;
+}
+
+/* One activation step: send (or do the vendor control request), read one 64 byte reply,
+ * log it, look for the get_info geometry. */
+static int upektc_step(libusb_device_handle *h, upektc_state_t *st, const char *name,
+                       const unsigned char *tmpl, size_t size, unsigned char seq, unsigned char *resp) {
+    int r;
+    if (tmpl) {
+        r = upektc_send(h, tmpl, size, seq);
+    } else {
+        unsigned char zero = 0;
+        r = libusb_control_transfer(h, 0x40 /* host to device, vendor, device */, 0x0c, 0x100, 0x0400,
+                                    &zero, 1, UPEKTC_TIMEOUT_MS);
+        if (r == 1) r = 0;
+    }
+    if (r < 0) {
+        upektc_rep("%s: send failed: %s", name, libusb_error_name(r));
+        return r;
+    }
+    int n = upektc_read_short(h, resp, 0);
+    if (n < 0) {
+        upektc_rep("%s: read failed: %s", name, libusb_error_name(n));
+        return n;
+    }
+    char label[64];
+    snprintf(label, sizeof(label), "%s reply", name);
+    upektc_hex(label, resp, n);
+    if (upektc_parse_info(resp, n, st) < 0) return LIBUSB_ERROR_NOT_SUPPORTED;
+    return 0;
+}
+
+/* Mirrors the activate state machine: control, init_1, init_2, control, init_3, init_4,
+ * each followed by one 64 byte read. init_4 is the only one that uses seq, and seq is
+ * incremented right after it. */
+static int upektc_activate(libusb_device_handle *h, upektc_state_t *st, unsigned char *resp) {
+    st->seq = 0;
+    if (upektc_step(h, st, "control 1", NULL, 0, 0, resp) < 0) return -1;
+    if (upektc_step(h, st, "init_1", upektc_init_1, sizeof(upektc_init_1), 0, resp) < 0) return -1;
+    if (upektc_step(h, st, "init_2", upektc_init_2, sizeof(upektc_init_2), 0, resp) < 0) return -1;
+    if (upektc_step(h, st, "control 2", NULL, 0, 0, resp) < 0) return -1;
+    if (upektc_step(h, st, "init_3", upektc_init_3, sizeof(upektc_init_3), 0, resp) < 0) return -1;
+    if (upektc_step(h, st, "init_4", upektc_init_4, sizeof(upektc_init_4), st->seq, resp) < 0) return -1;
+    st->seq++;
+    if (!st->have_geometry) {
+        upektc_rep("activation finished but no get_info reply (bytes 12 and 13 = 06 14) was seen");
+        return -1;
+    }
+    g_upek_img_width = st->width;
+    return 0;
+}
+
+/* Mirrors upektc_img_process_image_frame(): returns the payload length and its offset in the
+ * reply, or -1 when the length fields do not fit the bytes we actually received. */
+static int upektc_frame_payload(const unsigned char *d, int n, int *offset) {
+    int off = 8;
+    int len = (((d[5] & 0x0f) << 8) | d[6]) - 1;
+    if (d[7] == 0x2c) { len -= 10; off += 10; }
+    if (d[7] == 0x20) len -= 4;
+    if (len < 0 || off + len > n) return -1;
+    *offset = off;
+    return len;
+}
+
+/* Full capture for a bcdDevice 2 unit: activate, capture loop, deactivate. Returns a malloc'd
+ * width x height 8-bit image (width from upek_image_width()) or NULL. */
+static unsigned char *upektc_capture(libusb_device_handle *h, int *out_height) {
+    upektc_state_t st;
+    memset(&st, 0, sizeof(st));
+    unsigned char *resp = malloc(UPEKTC_MAX_RESP);
+    unsigned char *image = NULL;
+    unsigned char *result = NULL;
+    if (!resp) return NULL;
+    memset(resp, 0, UPEKTC_MAX_RESP);
+
+    g_upek_report = fopen(UPEK_PROBE_REPORT_PATH, "w");
+    upektc_rep("UPEK bcdDevice 2 backend (libfprint upektc_img port), Nov 6");
+    (void)upektc_crc_selftest();
+
+    if (upektc_activate(h, &st, resp) < 0) {
+        upektc_rep("RESULT: activation failed, no capture attempted");
+        goto out;
+    }
+
+    size_t expected = (size_t)st.width * (size_t)st.height;
+    image = calloc(expected * 2, 1);
+    if (!image) goto out;
+    size_t image_size = 0;
+    int frames = 0, retries = 0, need_init = 1, done = 0, last_status = -1;
+    time_t deadline = time(NULL) + UPEKTC_SWIPE_DEADLINE_S;
+
+    while (!done) {
+        if (time(NULL) > deadline) {
+            upektc_rep("RESULT: no complete swipe within %d seconds", UPEKTC_SWIPE_DEADLINE_S);
+            break;
+        }
+        if (need_init) {
+            const unsigned char *cmd = st.area_sensor ? upektc_init_capture_press : upektc_init_capture;
+            size_t cmd_size = st.area_sensor ? sizeof(upektc_init_capture_press) : sizeof(upektc_init_capture);
+            int r = upektc_send(h, cmd, cmd_size, st.seq);
+            st.seq++;
+            image_size = 0;
+            need_init = 0;
+            if (r < 0) {
+                upektc_rep("RESULT: init_capture send failed: %s", libusb_error_name(r));
+                break;
+            }
+        }
+
+        int n = upektc_read_full(h, resp);
+        if (n == LIBUSB_ERROR_TIMEOUT) continue;
+        if (n < 0) {
+            upektc_rep("RESULT: capture read failed: %s", libusb_error_name(n));
+            break;
+        }
+        if (n < 7) {
+            upektc_rep("RESULT: reply too short (%d bytes)", n);
+            break;
+        }
+
+        /* What to send before reading again. */
+        enum { ACT_ACK, ACT_ACK_TERM, ACT_ACK_FRAME, ACT_ACK_08, ACT_FAIL } act = ACT_FAIL;
+        int pause_us = 0;
+
+        if (resp[4] == 0x00 && n >= 8) {
+            unsigned char sub = resp[7];
+            if (sub == 0x28 && n >= 19) {
+                int status = resp[18];
+                if (status != last_status) {
+                    upektc_rep("finger status byte 0x%02x", status);
+                    last_status = status;
+                }
+                switch (status) {
+                case 0x0c:  /* no finger */
+                case 0x00:  /* finger present */
+                case 0x01:  /* finger gone */
+                    act = ACT_ACK;
+                    break;
+                case 0x13:  /* finger already on the sensor: swipe sensors restart the capture */
+                    act = st.area_sensor ? ACT_ACK : ACT_ACK_TERM;
+                    pause_us = 20000;
+                    break;
+                case 0x1e:
+                    upektc_rep("swipe too short, swipe again");
+                    act = st.area_sensor ? ACT_ACK : ACT_ACK_TERM;
+                    if (++retries > UPEKTC_MAX_RETRIES) act = ACT_FAIL;
+                    break;
+                case 0x1d:
+                    upektc_rep("too much horizontal movement, swipe again, keep the finger centered");
+                    act = st.area_sensor ? ACT_ACK : ACT_ACK_TERM;
+                    if (++retries > UPEKTC_MAX_RETRIES) act = ACT_FAIL;
+                    break;
+                default:
+                    upektc_rep("unexpected status byte 0x%02x, restarting the capture", status);
+                    act = st.area_sensor ? ACT_ACK : ACT_ACK_TERM;
+                    if (++retries > UPEKTC_MAX_RETRIES) act = ACT_FAIL;
+                    break;
+                }
+            } else if (sub == 0x2c || sub == 0x24 || sub == 0x20) {
+                int off = 0;
+                int len = upektc_frame_payload(resp, n, &off);
+                if (len < 0 || image_size + (size_t)len > expected * 2) {
+                    upektc_rep("RESULT: bad frame (type 0x%02x, %d bytes received, payload %d, image so far %zu)",
+                               sub, n, len, image_size);
+                    break;
+                }
+                memcpy(image + image_size, resp + off, (size_t)len);
+                image_size += (size_t)len;
+                frames++;
+                if (sub == 0x20) {
+                    upektc_rep("last frame received, %d frames, image size %zu (expected %zu)",
+                               frames, image_size, expected);
+                    done = 1;
+                    continue;
+                }
+                act = ACT_ACK_FRAME;
+            } else {
+                upektc_hex("unknown 00-type reply", resp, n);
+            }
+        } else if (resp[4] == 0x08) {
+            act = ACT_ACK_08;
+        } else {
+            upektc_hex("unhandled reply", resp, n);
+        }
+
+        if (act == ACT_FAIL) {
+            upektc_rep("RESULT: capture aborted");
+            break;
+        }
+
+        int r;
+        switch (act) {
+        case ACT_ACK_FRAME:
+            r = upektc_send(h, upektc_ack_frame, sizeof(upektc_ack_frame), st.seq);
+            st.seq++;
+            break;
+        case ACT_ACK_08:
+            r = upektc_send(h, upektc_ack_08, sizeof(upektc_ack_08), 0);
+            break;
+        default:
+            r = upektc_send(h, upektc_ack_00_28, sizeof(upektc_ack_00_28), st.seq);
+            st.seq++;
+            break;
+        }
+        if (r < 0) {
+            upektc_rep("RESULT: ack send failed: %s", libusb_error_name(r));
+            break;
+        }
+        if (act == ACT_ACK_TERM) {
+            /* The device answers the ack once more, then the capture starts over. */
+            int t = upektc_read_short(h, resp, 0);
+            if (t < 0) {
+                upektc_rep("RESULT: read after ack failed: %s", libusb_error_name(t));
+                break;
+            }
+            need_init = 1;
+        }
+        if (pause_us) usleep((useconds_t)pause_us);
+    }
+
+    if (done && image_size > 0) {
+        result = calloc(expected, 1);
+        if (result) {
+            memcpy(result, image, image_size < expected ? image_size : expected);
+            *out_height = st.height;
+            upektc_rep("RESULT: captured %d x %d image", st.width, st.height);
+        }
+    }
+
+    /* Deactivate even when the capture failed so the sensor is not left mid-capture. */
+    if (upektc_send(h, upektc_deinit, sizeof(upektc_deinit), st.seq) == 0) {
+        st.seq++;
+        int d = upektc_read_short(h, resp, 0);
+        if (d >= 0) upektc_hex("deinit reply", resp, d);
+        else upektc_rep("deinit: read failed: %s (non-fatal)", libusb_error_name(d));
+    } else {
+        upektc_rep("deinit: send failed (non-fatal)");
+    }
+
+out:
+    fprintf(stderr, "upek: bcd2: report saved to %s, please send it\n", UPEK_PROBE_REPORT_PATH);
+    if (g_upek_report) { fclose(g_upek_report); g_upek_report = NULL; }
+    free(image);
+    free(resp);
+    return result;
+}
+
 /* ---- Public capture entry point ---- */
 
 /* Full one-swipe capture: init -> await finger -> capture -> deinit.
@@ -727,6 +1200,13 @@ out:
  * doesn't duplicate that step since it's identical across sensors --
  * only the actual capture protocol differs). */
 unsigned char *upek_capture_fingerprint_image(libusb_device_handle *handle, int *out_height) {
+    /* libfprint splits 147e:2016 by bcdDevice: 1 is upeksonly (register protocol, below),
+     * 2 is upektc_img (CRC framed commands). Anything else keeps the original path. */
+    struct libusb_device_descriptor desc;
+    if (libusb_get_device_descriptor(libusb_get_device(handle), &desc) == 0 && desc.bcdDevice == 0x0002) {
+        return upektc_capture(handle, out_height);
+    }
+
     int init_r = upek_run_init(handle);
     if (init_r < 0) {
         /* First report from real hardware (Oct 11): the very first register write (0x49) stalls
@@ -866,7 +1346,7 @@ bool upek_sensor_is_present(void) {
 }
 
 int upek_image_width(void) {
-    return UPEK_IMG_WIDTH;
+    return g_upek_img_width;
 }
 
 /* ---- Standalone smoke-test harness ----

@@ -64,4 +64,11 @@ bool metallica_mis_get_factory_bits(metallica_mis_tls_t *tls, uint16_t tag, uint
 bool metallica_mis_get_factory_calibration_values(metallica_mis_tls_t *tls,
                                                     uint8_t *out, size_t out_max, size_t *out_len);
 
+/* factory_bits[7][4:] (sensor.py's factory_calib_data), needed by line_update_type_2. */
+bool metallica_mis_get_factory_calib_data(metallica_mis_tls_t *tls,
+                                           uint8_t *out, size_t out_max, size_t *out_len);
+
+/* Sensor type from factory bits subtag 8 (LE u32): 0x199 or 0xdb. */
+bool metallica_mis_get_sensor_type(metallica_mis_tls_t *tls, uint32_t *type_out);
+
 #endif /* MMIS_FACTORY_BITS_H */

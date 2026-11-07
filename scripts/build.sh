@@ -59,3 +59,5 @@ case ",$FAMILIES," in *,metallica,*)
 
 echo ""
 echo "Build complete (sensor family: $FAMILIES): $BUILT"
+
+# Updater test comment
