@@ -23,7 +23,7 @@ chmod +x prep_and_build.sh
 <p>This produces the client and each sensor's daemon and support files.</p></section>
 <section id="run"><h2>2. Run the client</h2>
 <pre><code>sudo ./hack-touchid</code></pre>
-<p>The first launch shows verbose output. Skip it with <code>--q</code> or <code>--quiet</code>. After the first launch the client adds itself to your <code>$PATH</code>, so from any new terminal you can just run:</p>
+<p>On launch the client runs its startup checks, then clears the screen and draws the menu. If a check prints a warning or an error, the screen is not cleared so you can read it. Use <code>--q</code> or <code>--quiet</code> for the plain startup (banner first, no clearing). After the first launch the client adds itself to your <code>$PATH</code>, so from any new terminal you can just run:</p>
 <pre><code>sudo hack-touchid</code></pre></section>
 <section id="menu"><h2>3. Use the menu</h2>
 <pre><code>Actions
@@ -49,7 +49,7 @@ Utilities
 <p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for your fingerprint and, on a match, types the stored password.</p></section>
 <section id="args"><h2>Launch arguments</h2><div class="scroll"><table>
 <thead><tr><th>Argument</th><th>What it does</th></tr></thead><tbody>
-<tr><td><code>--q</code> / <code>--quiet</code></td><td>Launch without the verbose boot output.</td></tr>
+<tr><td><code>--q</code> / <code>--quiet</code></td><td>Plain startup: banner first, the startup checks stay on screen and the screen is not cleared afterwards.</td></tr>
 <tr><td><code>--deploy-agent</code></td><td>Run [3] Deploy without entering the client. The menu bar app also uses it after a macOS update.</td></tr>
 <tr><td><code>--diag-pid</code></td><td>Run the [D] Diagnose steps without launching the client.</td></tr>
 <tr><td><code>--check-updates</code></td><td>Check for updates without launching the client. If there is one, it shows the [A] Show changelog / [Y] Download and install / [N] Cancel prompt.</td></tr>
