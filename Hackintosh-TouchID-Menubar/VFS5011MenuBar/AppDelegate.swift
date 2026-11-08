@@ -1219,6 +1219,8 @@ final class AuthOverlay {
             // One step above the shielding window the lock screen and screen saver use.
             p.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()) + 1)
             p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .fullScreenDisallowsTiling, .ignoresCycle]
+            // The AppKit switch that allows a window to be shown at the login window / lock screen.
+            p.canBecomeVisibleWithoutLogin = true
         } else {
             p.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
             p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
@@ -1266,12 +1268,53 @@ final class AuthOverlay {
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: kind.subtitle ?? kind.title])
 
+        if AuthOverlay.lockScreenExperiment { scheduleLockDiagnostics(for: panel, kind: kind) }
+
         let life = kind.lifetime ?? waitingSafetySeconds
         let work = DispatchWorkItem { [weak self] in
             if thenWaiting { self?.present(.waiting, thenWaiting: false) } else { self?.dismiss() }
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + life, execute: work)
+    }
+
+    // EXPERIMENT diagnostics: after a card is shown, list what the window server says about the
+    // screen into /tmp/htid-overlay-debug.log, so we can see whether our window is on screen while
+    // locked and which window (layer) covers it.
+    private func scheduleLockDiagnostics(for panel: NSPanel, kind: AuthOverlayKind) {
+        let number = panel.windowNumber
+        let level = panel.level.rawValue
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            let locked = (session?["CGSSessionScreenIsLocked"] as? Bool) ?? false
+            var lines: [String] = []
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            lines.append("[\(stamp)] card=\(kind.title) locked=\(locked) ourWindow=\(number) ourLevel=\(level) shielding=\(CGShieldingWindowLevel()) canBecomeVisibleWithoutLogin=\(panel.canBecomeVisibleWithoutLogin) panelVisible=\(panel.isVisible) occlusion=\(panel.occlusionState.rawValue)")
+            if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
+                var ourOnScreen = false
+                for w in info {
+                    let num = (w[kCGWindowNumber as String] as? Int) ?? -1
+                    let layer = (w[kCGWindowLayer as String] as? Int) ?? 0
+                    let owner = (w[kCGWindowOwnerName as String] as? String) ?? "?"
+                    if num == number { ourOnScreen = true }
+                    if layer >= 20 || num == number {
+                        let name = (w[kCGWindowName as String] as? String) ?? ""
+                        let alpha = (w[kCGWindowAlpha as String] as? Double) ?? 1
+                        lines.append("    window \(num) owner=\(owner) name=\"\(name)\" layer=\(layer) alpha=\(alpha)")
+                    }
+                }
+                lines.append("    ourWindowOnScreenList=\(ourOnScreen) totalOnScreen=\(info.count)")
+            } else {
+                lines.append("    CGWindowListCopyWindowInfo returned nothing")
+            }
+            let text = lines.joined(separator: "\n") + "\n"
+            let path = "/tmp/htid-overlay-debug.log"
+            if let h = FileHandle(forWritingAtPath: path) {
+                h.seekToEndOfFile(); h.write(text.data(using: .utf8) ?? Data()); h.closeFile()
+            } else {
+                try? text.write(toFile: path, atomically: true, encoding: .utf8)
+            }
+        }
     }
 
     private func dismiss() {
