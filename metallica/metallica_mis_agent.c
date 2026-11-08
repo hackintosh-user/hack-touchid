@@ -47,6 +47,8 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/IOKitLib.h>
+#include <IOKit/IOMessage.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
 
 #include "supported_sensors.h"
 #include "metallica_mis_daemon.h"
@@ -198,6 +200,15 @@ static atomic_int g_wait_state = STATE_IDLE;
 static void lockswipe_try_arm(void);
 static void lockswipe_disarm(void);
 static atomic_int g_running = 1;
+
+/* Sleep / wake handling. The sensor loses power or re-enumerates over sleep, so a session opened
+ * before it is dead afterwards. The power callback (main thread) only sets flags; the polling
+ * thread, which owns the session, closes it and waits for the USB bus to settle before reopening. */
+#define WAKE_SETTLE_MS 2500
+static atomic_bool g_sleeping = false;       /* between WillSleep and HasPoweredOn */
+static atomic_bool g_session_flush = false;  /* polling thread: drop the open session now */
+static atomic_bool g_session_held = false;   /* polling thread: a sensor session is open */
+static atomic_llong g_wake_settle_until = 0; /* monotonic ms: do not open the sensor before this */
 
 /* Auth triggers, same as the VFS5011 daemon: the lock screen, or a
  * SecurityAgent / System Settings padlock with a secure text field. */
@@ -433,7 +444,8 @@ static void settle_to_idle(void) {
 /* Polled by the daemon API while it waits for a finger (about every 300 ms):
  * stop waiting when the episode ended, the client wants the sensor, or we quit. */
 static int abort_wait_cb(void) {
-    return atomic_load(&g_state) != atomic_load(&g_wait_state) || yield_is_active() || !atomic_load(&g_running);
+    return atomic_load(&g_state) != atomic_load(&g_wait_state) || yield_is_active() || !atomic_load(&g_running)
+           || atomic_load(&g_session_flush);
 }
 
 
@@ -1222,18 +1234,30 @@ static void *polling_thread_main(void *arg) {
     bool session_open = false;
     int open_failures = 0;
     int error_streak = 0;
+    int lock_retries = 0;
     metallica_mis_agent_set_abort_cb(abort_wait_cb);
 
     while (atomic_load(&g_running)) {
+        /* Sleep or wake: whatever session is open belongs to a sensor state that no longer exists. */
+        if (atomic_exchange(&g_session_flush, false) && session_open) {
+            metallica_mis_agent_close();
+            session_open = false;
+            print_timestamp();
+            printf("Sensor session dropped because of sleep or wake.\n");
+        }
+        atomic_store(&g_session_held, session_open);
+
         /* A client yield is only confirmed once no session is held. */
         if (!session_open && atomic_exchange(&g_yield_ack_pending, false)) vfs5011_notify_yield_ready();
 
         int st = atomic_load(&g_state);
-        bool want_session = (st == STATE_POLLING || st == STATE_LOCK_ARMED) && !yield_is_active();
+        bool want_session = (st == STATE_POLLING || st == STATE_LOCK_ARMED) && !yield_is_active()
+                            && !atomic_load(&g_sleeping) && monotonic_ms() >= atomic_load(&g_wake_settle_until);
         if (!want_session) {
-            if (session_open) { metallica_mis_agent_close(); session_open = false; }
+            if (session_open) { metallica_mis_agent_close(); session_open = false; atomic_store(&g_session_held, false); }
             open_failures = 0;
             error_streak = 0;
+            lock_retries = 0;
             usleep(200000);
             continue;
         }
@@ -1248,7 +1272,9 @@ static void *polling_thread_main(void *arg) {
                     continue;
                 }
                 session_open = true;
+                atomic_store(&g_session_held, true);
                 open_failures = 0;
+                lock_retries = 0;
             } else if (rc == MMIS_SESSION_FAILED) {
                 if (st == STATE_LOCK_ARMED) { lockswipe_pause("the sensor refused the session (host identity)", 300); continue; }
                 abandon_episode("The sensor refused the session: the saved host identity does not match the one it was paired with. Run [2] Verify in the client once to enter it. Staying IDLE.");
@@ -1259,6 +1285,15 @@ static void *polling_thread_main(void *arg) {
                     open_failures = 0;
                 } else if (st == STATE_LOCK_ARMED) {
                     usleep(1000000);
+                } else if (atomic_load(&g_trigger_source) == TRIGGER_LOCK_SCREEN) {
+                    /* The lock screen has no other way to authenticate: keep trying (the sensor can take
+                     * a while to come back after a long sleep) until it opens or the screen unlocks. */
+                    lock_retries++;
+                    if (lock_retries <= 3 || lock_retries % 15 == 0) {
+                        print_timestamp();
+                        printf("Could not open the sensor session for the lock screen (attempt %d), retrying...\n", lock_retries);
+                    }
+                    usleep(2000000);
                 } else if (++open_failures >= MAX_OPEN_FAILURES) {
                     abandon_episode("Could not open a session with the sensor several times in a row. Staying IDLE.");
                 } else {
@@ -1320,6 +1355,39 @@ static void *polling_thread_main(void *arg) {
     return NULL;
 }
 
+
+/* ------------------------------------------------------------------ *
+ * Sleep / wake notifications
+ * ------------------------------------------------------------------ */
+
+static io_connect_t g_pm_root_port = MACH_PORT_NULL;
+
+static void power_callback(void *refcon, io_service_t service, natural_t msg, void *arg) {
+    (void)refcon; (void)service;
+    switch (msg) {
+    case kIOMessageCanSystemSleep:
+        IOAllowPowerChange(g_pm_root_port, (long)arg);
+        break;
+    case kIOMessageSystemWillSleep:
+        atomic_store(&g_sleeping, true);
+        atomic_store(&g_session_flush, true);
+        /* Give the polling thread up to 3 s to close the session before the bus loses power. */
+        for (int i = 0; i < 30 && atomic_load(&g_session_held); i++) usleep(100000);
+        print_timestamp();
+        printf("System going to sleep (sensor session %s).\n", atomic_load(&g_session_held) ? "still open" : "closed");
+        IOAllowPowerChange(g_pm_root_port, (long)arg);
+        break;
+    case kIOMessageSystemHasPoweredOn:
+        atomic_store(&g_session_flush, true);
+        atomic_store(&g_wake_settle_until, monotonic_ms() + WAKE_SETTLE_MS);
+        atomic_store(&g_sleeping, false);
+        print_timestamp();
+        printf("System woke up -> waiting %d ms for the sensor to come back before opening a session.\n", WAKE_SETTLE_MS);
+        break;
+    default:
+        break;
+    }
+}
 
 /* ------------------------------------------------------------------ *
  * OpenCore version gate (v1.0.2 requirement)
@@ -1508,6 +1576,16 @@ int main(int argc, char **argv) {
         auth_prompt_poll_callback, NULL);
     CFRunLoopAddTimer(CFRunLoopGetCurrent(), auth_prompt_timer, kCFRunLoopDefaultMode);
     printf("Auth-prompt watcher registered (padlock, polling every 300ms).\n");
+
+    IONotificationPortRef pm_port = NULL;
+    io_object_t pm_notifier = IO_OBJECT_NULL;
+    g_pm_root_port = IORegisterForSystemPower(NULL, &pm_port, power_callback, &pm_notifier);
+    if (g_pm_root_port != MACH_PORT_NULL && pm_port) {
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), IONotificationPortGetRunLoopSource(pm_port), kCFRunLoopCommonModes);
+        printf("Sleep/wake notifications registered.\n");
+    } else {
+        printf("WARNING: could not register for sleep/wake notifications.\n");
+    }
 
     vfs5011_set_lockswipe_handler(on_lockswipe_setting_changed);
     vfs5011_set_yield_handler(on_yield_request);
