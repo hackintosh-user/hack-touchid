@@ -329,7 +329,7 @@ class HackTouchIDPane: NSPreferencePane {
         "138a:0018": ("Validity VFS5011", true),
         "147e:2016": ("UPEK/AuthenTec TouchStrip", false),
         "06cb:009a": ("Synaptics Metallica MIS", true),
-        "138a:0097": ("Synaptics Prometheus", false),
+        "138a:0097": ("Synaptics Prometheus", true),
         "138a:009d": ("Synaptics Metallica MIS", false),
     ]
 
@@ -1284,7 +1284,7 @@ class HackTouchIDPane: NSPreferencePane {
         // Authentication switch: the flag file's presence means scanning is paused.
         let enabled = !fileExists(Paths.scanningDisabledFlag)
         authSwitch.state = enabled ? .on : .off
-        authStatus.stringValue = enabled ? "On. Swipe your finger when asked to authenticate."
+        authStatus.stringValue = enabled ? "On. Use your fingerprint when asked to authenticate."
                                          : "Off. Fingerprint authentication is paused, use your password."
 
         // Daemon: launchd label check in the user's GUI domain, same idea as
