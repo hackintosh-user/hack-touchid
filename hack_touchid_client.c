@@ -8881,6 +8881,12 @@ int main(int argc, char **argv) {
         }
         if (len == 0) continue;
 
+        /* Typing the word "exit" or "quit" instead of Q just exits too. */
+        if (strcasecmp(line, "exit") == 0 || strcasecmp(line, "quit") == 0) {
+            printf("\nExiting Hack-TouchID Client.\n");
+            return 0;
+        }
+
         char cmd = line[0];
         printf("\n");
         bool ran_action = true;
