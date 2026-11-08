@@ -3,7 +3,7 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
-## v2.0.0 (No ETA yet | This is Pre-Release software) 
+## v2.0.0 | November 10th 2026
 
 - New sensor, fully supported: Prometheus 97 (`138a:0097`), confirmed working on a ThinkPad X1C5. Pairing, calibration, Enroll, Verify, lock screen unlock, padlock unlock and the Settings pane all work. It shares the Metallica MIS driver, so `[P]` Pair, `--enroll-test`, `--verify-test`, `--mmis-connect` and `--mmis-calibrate` apply to it too.
 - Fixed 0097 calibration failing with `average() failed for blank image`. The sensor starts streaming image lines as soon as the capture command is accepted, and the first lines were lost because the read was posted afterwards. The client now posts the read first and rebuilds the frames from the line counters, so a few missing lines no longer fail calibration. If calibration still fails, the raw capture is written to `/tmp/htid-calibrate-raw.bin` and `/tmp/htid-calibrate-info.txt` for diagnosis.
