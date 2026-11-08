@@ -1185,6 +1185,49 @@ final class AuthCardView: NSView {
     }
 }
 
+// EXPERIMENT: puts a window into its own window server "space" at the level macOS uses for the
+// notification center on the lock screen (400), above the lock screen UI (300). This is the same
+// private SkyLight call sequence that other lock screen apps use (for example the MIT licensed
+// SkyLightWindow package by Lakr233). Everything is looked up at runtime, so if any symbol is missing
+// on a macOS version, `shared` is nil and the app just keeps using banners on the lock screen.
+final class SkyLightSpace {
+    static let shared: SkyLightSpace? = SkyLightSpace()
+
+    private typealias MainConnectionID = @convention(c) () -> Int32
+    private typealias SpaceCreate = @convention(c) (Int32, Int32, Int32) -> Int32
+    private typealias SpaceSetAbsoluteLevel = @convention(c) (Int32, Int32, Int32) -> Int32
+    private typealias ShowSpaces = @convention(c) (Int32, CFArray) -> Int32
+    private typealias SpaceAddWindowsAndRemoveFromSpaces = @convention(c) (Int32, Int32, CFArray, Int32) -> Int32
+
+    private let connection: Int32
+    private let space: Int32
+    private let addWindows: SpaceAddWindowsAndRemoveFromSpaces
+
+    private init?() {
+        guard let h = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight", RTLD_NOW),
+              let pConn = dlsym(h, "SLSMainConnectionID"),
+              let pCreate = dlsym(h, "SLSSpaceCreate"),
+              let pLevel = dlsym(h, "SLSSpaceSetAbsoluteLevel"),
+              let pShow = dlsym(h, "SLSShowSpaces"),
+              let pAdd = dlsym(h, "SLSSpaceAddWindowsAndRemoveFromSpaces")
+        else { return nil }
+        let mainConnectionID = unsafeBitCast(pConn, to: MainConnectionID.self)
+        let spaceCreate = unsafeBitCast(pCreate, to: SpaceCreate.self)
+        let setLevel = unsafeBitCast(pLevel, to: SpaceSetAbsoluteLevel.self)
+        let showSpaces = unsafeBitCast(pShow, to: ShowSpaces.self)
+        addWindows = unsafeBitCast(pAdd, to: SpaceAddWindowsAndRemoveFromSpaces.self)
+        connection = mainConnectionID()
+        space = spaceCreate(connection, 1, 0)
+        _ = setLevel(connection, space, 400) // kSLSSpaceAbsoluteLevelNotificationCenterAtScreenLock
+        _ = showSpaces(connection, [space] as CFArray)
+    }
+
+    func delegate(_ window: NSWindow) {
+        guard window.windowNumber > 0 else { return }
+        _ = addWindows(connection, space, [window.windowNumber] as CFArray, 7)
+    }
+}
+
 // One borderless panel, reused. Level is the assistive-technology window level, which sits above
 // normal windows, full-screen apps and the menu bar, so it needs no notification permission.
 final class AuthOverlay {
@@ -1216,9 +1259,10 @@ final class AuthOverlay {
 
     private func applyLevel(to p: NSPanel) {
         if AuthOverlay.lockScreenExperiment {
-            // One step above the shielding window the lock screen and screen saver use.
-            p.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()) + 1)
-            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .fullScreenDisallowsTiling, .ignoresCycle]
+            // Same window settings as the SkyLightWindow reference: top level, joins all spaces. The
+            // window is moved into the lock screen level space in present().
+            p.level = NSWindow.Level(rawValue: Int(Int32.max - 2))
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
             // The AppKit switch that allows a window to be shown at the login window / lock screen.
             p.canBecomeVisibleWithoutLogin = true
         } else {
@@ -1259,6 +1303,7 @@ final class AuthOverlay {
         panel.setFrame(NSRect(x: x, y: wasVisible ? y : y + 8, width: size.width, height: size.height), display: true)
         if !wasVisible { panel.alphaValue = 0 }
         panel.orderFrontRegardless()
+        if AuthOverlay.lockScreenExperiment { SkyLightSpace.shared?.delegate(panel) }
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             panel.animator().alphaValue = 1
@@ -1289,7 +1334,7 @@ final class AuthOverlay {
             let locked = (session?["CGSSessionScreenIsLocked"] as? Bool) ?? false
             var lines: [String] = []
             let stamp = ISO8601DateFormatter().string(from: Date())
-            lines.append("[\(stamp)] card=\(kind.title) locked=\(locked) ourWindow=\(number) ourLevel=\(level) shielding=\(CGShieldingWindowLevel()) canBecomeVisibleWithoutLogin=\(panel.canBecomeVisibleWithoutLogin) panelVisible=\(panel.isVisible) occlusion=\(panel.occlusionState.rawValue)")
+            lines.append("[\(stamp)] card=\(kind.title) locked=\(locked) ourWindow=\(number) ourLevel=\(level) shielding=\(CGShieldingWindowLevel()) canBecomeVisibleWithoutLogin=\(panel.canBecomeVisibleWithoutLogin) skyLight=\(SkyLightSpace.shared != nil) panelVisible=\(panel.isVisible) occlusion=\(panel.occlusionState.rawValue)")
             if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
                 var ourOnScreen = false
                 for w in info {
