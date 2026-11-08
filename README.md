@@ -149,7 +149,8 @@ Known limitations:
 
 ## Requirements
 - **macOS 14 Sonoma and later** (older versions may work, but I offer **0 support for them**)
-- **macOS 15 Sequoia and later is the recommended version for Hackintosh Touch-ID** 
+- **macOS 15 Sequoia and later is the recommended version for Hackintosh Touch-ID**
+- **macOS 26 Tahoe** for "swipe/touch to lock" 
 - Xcode Command Line Tools (`xcode-select --install`)
 - [Homebrew](https://brew.sh) or [MacPorts](https://www.macports.org) (the build scripts and the client look in both; with MacPorts the packages below are `libusb`, `openssl3`, `innoextract` and `7zip`, installed with `sudo port install`)
 - Dependencies depend on your sensor. `prep_and_build.sh` installs only what yours needs (run `./prep_and_build.sh --list` to see it):
