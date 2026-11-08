@@ -732,18 +732,12 @@ static int g_color_enabled = 1;
 #define VFSC_BRED    (g_color_enabled ? "\033[1;31m" : "")
 #define VFSC_BYELLOW (g_color_enabled ? "\033[1;33m" : "")
 
-/* Verbose boot log, default ON -- prints a scrolling kernel-log-style
- * flavor line before/around the real startup checks, mirroring a
- * Hackintosh verbose boot (-v). Purely decorative timestamp/prefix
- * text wrapped around REAL check results -- it never replaces or
- * hides the actual pass/fail output those checks already print,
- * only adds atmosphere around it. Pass --q (or --quiet) to skip the
- * flavor lines entirely and get the older, plain startup output.
- * Intentionally kept non-denominational/purely-technical flavor
- * text only (no "gods"/mythology framing) -- this ships to a mixed
- * audience and there's no upside to picking that fight. */
+/* Boot output, default ON. The real startup checks print their own status lines
+ * (OpenCore version, sensor, daemon version, enrolled fingers...). When every check passed with
+ * nothing to read, the screen is cleared and the banner and menu are drawn. If anything printed a
+ * warning or an error, the screen is left alone so it can be read. Pass --q (or --quiet) for the
+ * plain startup: banner first, no clearing afterwards. */
 static bool g_verbose_boot = true;
-static double g_boot_fake_time = 0.000031;
 
 /* Set by argv parsing in main() when "--deploy-agent" is passed.
  * Routes into run_deploy_agent_mode() (defined further down, right
@@ -863,38 +857,11 @@ static bool g_status_quiet = false;
  * the "run [3] again" reminder next to the menu. */
 static bool g_daemon_removed_by_update = false;
 
-static void vfsc_boot_line(const char *fmt, ...) {
-    if (!g_verbose_boot) return;
 
-    /* Fake-but-monotonic timestamp, small pseudo-random-ish increment
-     * each call so it reads like a real dmesg/kernel log scroll
-     * rather than a suspiciously round counter. */
-    g_boot_fake_time += 0.000037 + (double)(rand() % 419) / 1000000.0;
-
-    printf("%s[%9.6f]%s ", VFSC_DIM, g_boot_fake_time, VFSC_RESET);
-
-    va_list ap;
-    va_start(ap, fmt);
-    vprintf(fmt, ap);
-    va_end(ap);
-    printf("\n");
-}
-
-/* Like vfsc_boot_line(), but for the REAL check functions' own
- * routine status lines (e.g. "OpenCore v1.0.7 detected: continue.")
- * rather than pure decorative flavor. Unlike vfsc_boot_line(), this
- * ALWAYS prints -- quiet mode (--q) still needs to see real check
- * results, it just drops the timestamp prefix and goes back to the
- * older plain output exactly. Verbose mode gets the same timestamp
- * treatment as the flavor lines around it, so the whole boot reads
- * as one continuous log instead of some lines having timestamps and
- * others not. */
+/* Status line of a REAL startup check (e.g. "OpenCore v1.0.7 detected: continue."). Always prints:
+ * quiet mode (--q) still needs to see real check results. */
 static void vfsc_status_line(const char *fmt, ...) {
     if (g_status_quiet) return;
-    if (g_verbose_boot) {
-        g_boot_fake_time += 0.000037 + (double)(rand() % 419) / 1000000.0;
-        printf("%s[%9.6f]%s ", VFSC_DIM, g_boot_fake_time, VFSC_RESET);
-    }
 
     va_list ap;
     va_start(ap, fmt);
@@ -909,134 +876,16 @@ static void vfsc_status_line(const char *fmt, ...) {
  * fully complete) -- appends a systemd/OpenRC-style colored
  * "[ OK ]" tag instead of a bare newline. Deliberately NOT used for
  * the "Checking X..." in-progress lines that precede these (those
- * stay plain vfsc_status_line calls, same as before) or for the
- * pure-flavor flood/boot lines above -- this tag means "a real gate
- * just passed", not "here's some atmosphere". */
+ * stay plain vfsc_status_line calls, same as before) -- this tag
+ * means "a real gate just passed". */
 static void vfsc_status_line_ok(const char *fmt, ...) {
     if (g_status_quiet) return;
-    if (g_verbose_boot) {
-        g_boot_fake_time += 0.000037 + (double)(rand() % 419) / 1000000.0;
-        printf("%s[%9.6f]%s ", VFSC_DIM, g_boot_fake_time, VFSC_RESET);
-    }
 
     va_list ap;
     va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
     printf(" %s[ %sOK%s ]%s\n", VFSC_DIM, VFSC_BGREEN, VFSC_DIM, VFSC_RESET);
-}
-
-/* Pure fun -- a real -v boot's whole appeal is watching a dense wall
- * of kernel/IOKit log lines fly by for several seconds before the
- * desktop shows up, and the handful of vfsc_boot_line() calls tied
- * to real startup checks above don't produce that: there just aren't
- * enough of them, and they print instantly with no delay between
- * lines. This is a purely decorative flood of extra flavor lines
- * with a small per-line delay, run once before the real checks
- * start, so the client's own startup gets that same "-v" feeling.
- * Every line here is 100% fake flavor text -- none of it is a real
- * check result, and it never blocks or gates anything (same
- * philosophy as vfsc_boot_line() above). Respects --q like the rest
- * of verbose mode, since it's the same off switch.
- *
- * Runtime is intentionally randomized per-line rather than a single
- * sleep(10) -- (rand() % (MAX-MIN)) + MIN microseconds between each
- * of ~70 lines averages out to roughly 10 real seconds, but reads
- * as an organic, uneven scroll the way a real kernel log does
- * (bursts of fast lines, occasional pauses) rather than a
- * metronome. */
-static void vfsc_verbose_boot_flood(void) {
-    if (!g_verbose_boot) return;
-
-    static const char *FLOOD_LINES[] = {
-        "AppleACPIPlatformExpert: ACPI tables validated",
-        "AppleACPICPU: Processor 0 (P0) initialized",
-        "IOPCIBridge: matching PCI device tree...",
-        "AppleIntelCPUPowerManagement: matched, PState table loaded",
-        "IOKit: Kext com.apple.driver.AppleUSBXHCIPCI, 1 personalities",
-        "IOKit: Kext com.apple.iokit.IOUSBHostFamily loaded",
-        "IOUSBHostDevice: enumerating downstream ports...",
-        "USBMSC Identifier (non-unique): match found",
-        "AppleUSBHub: hub @ 0x14200000, 4 ports powered",
-        "IOHIDFamily: matching HID device tree...",
-        "AppleHIDKeyboard: keyboard interface claimed",
-        "IOPlatformPluginFamily: [ACPI_SMC_PlatformPlugin] loaded",
-        "AppleSMC: SMC-KEYS successfully loaded (rev 1.3f0)",
-        "AppleGraphicsDevicePolicy: none found matching key IOGVA",
-        "IOGraphicsFamily: display framebuffer registered",
-        "AppleIntelFramebufferAzul: mobile platform, 1 display",
-        "AppleBacklightFixup: applying panel PWM patch",
-        "AppleALC: layout-id 0x0000000b applied",
-        "IOAudioFamily: HDA codec driver matched",
-        "AppleIntelPCHPowerManagement: matched",
-        "IOACPIPlatformDevice: SLPB button device registered",
-        "AppleRTC: RTC region 0x0-0x1000 mapped",
-        "AppleEFINVRAM: NVRAM region mapped, 0x10000 bytes",
-        "IODeviceTree: /options node populated",
-        "OpenCore: config.plist checksum verified",
-        "OpenCore: booter quirk RequestBootVarRouting active",
-        "kext cache: prelinkedkernel signature OK",
-        "AppleKeyStore: garbage collection pass complete",
-        "IOStorageFamily: probing block storage tree...",
-        "IOAHCIBlockStorageDevice: matched, 1 device",
-        "AppleAPFSContainer: scanning for containers...",
-        "apfs_module_start: com.apple.filesystems.apfs, 1677.100.5",
-        "AppleFSCompressionTypeZlib: kext loaded",
-        "AppleUSBMultitouchDriver: no matching personality (expected)",
-        "IOBluetoothHCIController: no controller present (expected)",
-        "AppleThunderboltNHI: no NHI hardware present (expected)",
-        "AppleUSBVHCIBCE: virtual hub attached",
-        "IOUSBHostFamily: composite driver matched interface 0",
-        "libusb-1.0: context refcount incremented",
-        "libusb-1.0: hotplug callback registered",
-        "IOKit: probing supported_sensors.h identity table...",
-        "IOUSBHostDevice: idVendor/idProduct match candidate found",
-        "IOUSBHostInterface: claiming interface 0, alt setting 0",
-        "IOUSBHostPipe: control endpoint 0x00 opened",
-        "IOUSBHostPipe: bulk endpoint 0x81 opened",
-        "IOUSBHostPipe: bulk endpoint 0x02 opened",
-        "AppleUSBHostBillboardDevice: no alternate mode present",
-        "kauth: credential resolved for calling process",
-        "sudo: session opened for user root",
-        "launchd: bootstrap namespace populated",
-        "launchd: querying com.hack-touchid.agent state...",
-        "diskutil: APFS container list refreshed",
-        "diskutil: HackTouchIDStore volume descriptor cached",
-        "SecurityAgent: TCC database opened read-only",
-        "AX: accessibility server handshake OK",
-        "CoreFoundation: preferences daemon reachable",
-        "IOReporting: power telemetry channel opened",
-        "AppleSMBIOS: DmiSystemFamily string decoded",
-        "AppleACPIPlatform: \\_SB.PCI0 device tree walk complete",
-        "OpenCore: SMBIOS spoof active, model string masked",
-        "IOKit: matching complete, 214 personalities probed",
-        "kextd: no orphaned kext bundles found",
-        "mds: metadata server idle",
-        "notifyd: watcher table primed",
-        "hack-touchid: capture pipeline symbols resolved",
-        "hack-touchid: NBIS mindtct/bozorth3 linked OK",
-        "hack-touchid: matcher self-test passed",
-    };
-    size_t n = sizeof(FLOOD_LINES) / sizeof(FLOOD_LINES[0]);
-
-    for (size_t i = 0; i < n; i++) {
-        g_boot_fake_time += 0.000037 + (double)(rand() % 419) / 1000000.0;
-        printf("%s[%9.6f]%s %s\n", VFSC_DIM, g_boot_fake_time, VFSC_RESET, FLOOD_LINES[i]);
-        fflush(stdout);
-
-        /* 60ms-220ms per line, ~70 lines -> averages out to roughly
-         * 10 real seconds with an uneven, organic scroll speed. */
-        usleep(60000 + (useconds_t)(rand() % 160000));
-    }
-
-    /* One last line with the real sensor-table count, printed
-     * separately (not via the flood array above) so nothing here
-     * uses a non-literal printf format string. */
-    g_boot_fake_time += 0.000037 + (double)(rand() % 419) / 1000000.0;
-    printf("%s[%9.6f]%s hack-touchid: reading supported_sensors.h (%zu entries)\n",
-           VFSC_DIM, g_boot_fake_time, VFSC_RESET, (size_t)HACK_TOUCHID_SENSOR_COUNT);
-    fflush(stdout);
-    usleep(60000 + (useconds_t)(rand() % 160000));
 }
 
 /* Small printf-style helpers so success/error/warning lines look the
@@ -1051,8 +900,13 @@ static void vfsc_ok(const char *fmt, ...) {
     va_end(ap);
     printf("%s", VFSC_RESET);
 }
+/* Counts warnings and errors printed, so the end of boot knows whether clearing the screen would
+ * hide something the person should read. */
+static int g_boot_notices = 0;
+
 static void vfsc_err(const char *fmt, ...) {
     va_list ap;
+    g_boot_notices++;
     fprintf(stderr, "%s", VFSC_BRED);
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -1061,6 +915,7 @@ static void vfsc_err(const char *fmt, ...) {
 }
 static void vfsc_warn(const char *fmt, ...) {
     va_list ap;
+    g_boot_notices++;
     printf("%s", VFSC_YELLOW);
     va_start(ap, fmt);
     vprintf(fmt, ap);
@@ -5484,38 +5339,59 @@ static void do_settings_toggle_live_update(void) {
 /* Defined further down in the updater section. */
 static void do_settings_recent_commits(void);
 static bool fetch_remote_version_file(const char *branch, client_version_info_t *out);
+static bool fetch_remote_version_file_animated(const char *branch, const char *label, client_version_info_t *out);
 static void run_update_prompt(const client_version_info_t *local,
                               const client_version_info_t *remote, bool live, bool relaunch);
 static bool remote_is_newer(const client_version_info_t *local, const client_version_info_t *remote);
 
-/* Settings [CU]: manual "check for updates now". Same comparison and
- * [A]/[Y]/[N] prompt as the launch-time check, but it also tells the
- * user when they are already up to date or when the check couldn't run. */
+/* Waits for Return, so a result page stays on screen until the person has read it. */
+static void wait_return_to_settings(void) {
+    printf("Press Return to go back to Settings...");
+    fflush(stdout);
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) { }
+}
+
+/* Settings [CU]: manual "check for updates now". Its own page: the screen is cleared, "Checking for
+ * Updates on <branch>" shows with a spinner while GitHub is asked, then the result (up to date, no
+ * connection, or the same [A]/[Y]/[X]/[N] prompt as the launch-time check) stays until Return. */
 static void do_settings_check_updates(void) {
+    if (g_color_enabled) {
+        printf("\033[2J\033[H");
+    }
+    printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+    printf("%s                         CHECK FOR UPDATES%s\n", VFSC_BCYAN, VFSC_RESET);
+    printf("%s%s%s\n\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+
     if (!g_local_version_loaded) {
         g_local_version_loaded = read_local_version_file(&g_local_version_info);
     }
     if (!g_local_version_loaded) {
         vfsc_err("No local %s found, so there is nothing to compare against. "
                  "Update once normally first.\n\n", VERSION_FILE_NAME);
+        wait_return_to_settings();
         return;
     }
     const client_version_info_t local = g_local_version_info;
 
-    printf("Checking for updates on \"%s\"...\n", local.branch);
+    char label[160];
+    snprintf(label, sizeof(label), "Checking for Updates on %s", local.branch);
     client_version_info_t remote;
-    if (!fetch_remote_version_file(local.branch, &remote)) {
+    if (!fetch_remote_version_file_animated(local.branch, label, &remote)) {
         vfsc_warn("Couldn't reach GitHub. Check your internet connection and try again.\n\n");
+        wait_return_to_settings();
         return;
     }
     if (!remote_is_newer(&local, &remote)) {
-        vfsc_ok("You are up to date: v%s (%s).\n\n", local.version, local.build);
+        vfsc_ok("You are up to date: v%s (%s) on %s.\n\n", local.version, local.build, local.branch);
+        wait_return_to_settings();
         return;
     }
     run_update_prompt(&local, &remote, false, true);
     /* Declined or failed: don't let the live watcher re-announce this build. */
     snprintf(g_update_watch_seen_version, sizeof(g_update_watch_seen_version), "%s", remote.version);
     snprintf(g_update_watch_seen_build, sizeof(g_update_watch_seen_build), "%s", remote.build);
+    wait_return_to_settings();
 }
 
 /* One group heading: bold cyan title, then a dim underline. */
@@ -6228,6 +6104,7 @@ static void check_macos_version_warning(void) {
 
     int darwin_major = atoi(uts.release); /* "23.6.0" -> 23 */
     if (darwin_major > 0 && darwin_major < 23) {
+        g_boot_notices++;
         printf("\n");
         printf("############################################################\n");
         printf("  WARNING: Darwin %s detected -- older than macOS Sonoma\n", uts.release);
@@ -6306,6 +6183,57 @@ static bool fetch_remote_version_file(const char *branch, client_version_info_t 
 
     if (total == 0) return false;
 
+    return parse_version_file(buf, out);
+}
+
+/* Same request as fetch_remote_version_file(), but draws "<label>  -" with a spinner (- \\ | /) on one
+ * line while curl runs, so a manual check never looks frozen. The spinner stays up for at least 0.9 s
+ * so a fast answer doesn't just flash. The line is wiped before returning. */
+static bool fetch_remote_version_file_animated(const char *branch, const char *label, client_version_info_t *out) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "curl -fsSL -m 3 '%s/%s/%s' 2>/dev/null",
+             UPDATE_RAW_BASE_URL, branch, VERSION_FILE_NAME);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return false;
+    int fd = fileno(fp);
+
+    static const char frames[4] = { '-', '\\', '|', '/' };
+    char buf[512];
+    size_t total = 0;
+    int frame = 0;
+    bool eof = false;
+    struct timespec t0, now;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    for (;;) {
+        if (!eof) {
+            struct pollfd pfd = { fd, POLLIN, 0 };
+            int pr = poll(&pfd, 1, 100);
+            if (pr > 0) {
+                ssize_t n = read(fd, buf + total, sizeof(buf) - 1 - total);
+                if (n > 0) total += (size_t)n;
+                else eof = true;
+                if (total >= sizeof(buf) - 1) eof = true;
+            } else if (pr < 0 && errno != EINTR) {
+                eof = true;
+            }
+        } else {
+            usleep(100000);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long elapsed_ms = (now.tv_sec - t0.tv_sec) * 1000 + (now.tv_nsec - t0.tv_nsec) / 1000000;
+        if (eof && elapsed_ms >= 900) break;
+        printf("\r%s  %s%c%s", label, VFSC_BCYAN, frames[frame++ % 4], VFSC_RESET);
+        fflush(stdout);
+    }
+    pclose(fp);
+    buf[total] = '\0';
+    printf("\r\033[K");
+    fflush(stdout);
+
+    if (total == 0) return false;
     return parse_version_file(buf, out);
 }
 
@@ -8864,20 +8792,6 @@ int main(int argc, char **argv) {
         print_banner();
     }
 
-    /* The fun part -- a dense, ~10-second flood of fake kernel/IOKit
-     * log lines before the REAL startup checks below, so verbose
-     * mode actually reads like a Hackintosh's own -v boot instead of
-     * a handful of instantly-printed status lines. Purely decorative;
-     * see vfsc_verbose_boot_flood()'s own comment for why it's kept
-     * separate from the real checks. */
-    vfsc_verbose_boot_flood();
-
-    vfsc_boot_line("AppleACPIPlatform: enumerating hardware...");
-    vfsc_boot_line("IOKit: matching USB device tree...");
-    vfsc_boot_line("com.hack-touchid.client @ 0x0000 (v%s)", VFS5011_PROJECT_VERSION);
-    vfsc_boot_line("libusb-1.0: context initialized");
-
-    vfsc_boot_line("NVRAM: reading IODeviceTree:/options...");
     if (!check_opencore_version_requirement()) {
         return 1;
     }
@@ -8885,18 +8799,14 @@ int main(int argc, char **argv) {
     check_macos_version_warning();
 
     g_live_update_check = load_live_update_setting();
-    vfsc_boot_line("Checking for updates...");
     check_for_client_update();
 
-    vfsc_boot_line("USB: probing supported_sensors.h device table...");
     if (!check_sensor_presence_gate()) {
         return 1;
     }
-    vfsc_boot_line("Sensor descriptor matched, claiming interface...");
 
     check_sensor_dependencies();
 
-    vfsc_boot_line("launchd: querying installed daemon version...");
     if (!check_daemon_version_gate()) {
         return 1;
     }
@@ -8905,8 +8815,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    vfsc_boot_line("HackTouchIDStore: mounting encrypted APFS volume...");
-    vfsc_boot_line("AX: checking Accessibility grant...");
 
     /* Mount the template volume once up front to find out what's
      * actually enrolled, so the status line below doesn't have to
@@ -8929,16 +8837,19 @@ int main(int argc, char **argv) {
     } else {
         refresh_finger_cache();
     }
-    vfsc_boot_line("Template DB: %d enrolled", g_finger_count > 0 ? g_finger_count : 0);
     vfsc_status_line_ok("hack-touchid: init complete");
 
-    /* Banner prints LAST in verbose mode, once the whole boot log has
-     * scrolled by -- reads as "boot finished, here's the app" rather
-     * than a logo sitting in the middle of a log stream. Quiet mode
-     * already printed it up front (see above), so skip it here to
-     * avoid a duplicate. */
+    /* Default start: the boot checks are done, so wipe them and draw the banner and menu on a clean
+     * screen. Anything that printed a warning or an error stays on screen to be read. Quiet mode
+     * already printed its banner up front. */
     if (g_verbose_boot) {
-        print_banner();
+        if (g_boot_notices == 0 && g_color_enabled) {
+            fflush(stdout);
+            usleep(600000); /* long enough to see the last check pass */
+            clear_screen_and_redraw_banner();
+        } else {
+            print_banner();
+        }
     }
 
     g_status_quiet = false;
