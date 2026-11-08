@@ -1676,7 +1676,7 @@ static void *load_templates_thread_main(void *arg) {
             settle_to_idle();
             atomic_store(&g_trigger_source, TRIGGER_NONE);
             if (g_trigger_secure_field) { CFRelease(g_trigger_secure_field); g_trigger_secure_field = NULL; }
-            vfs5011_notify_swipe_failed(); /* we already told them to swipe -- let the menu bar app walk that back */
+            vfs5011_notify_swipe_cancelled(); /* we already told them to swipe -- let the menu bar app walk that back */
         }
     }
     return NULL;
@@ -1695,6 +1695,7 @@ static void on_screen_locked(void) {
 }
 
 static void on_screen_unlocked(void) {
+    vfs5011_notify_swipe_cancelled(); /* no-op if a success was already announced for this episode */
     atomic_store(&g_state, STATE_IDLE);
     atomic_store(&g_trigger_source, TRIGGER_NONE);
     atomic_store(&g_lock_screen_since_ms, 0);
@@ -1782,7 +1783,7 @@ static void arm_polling_for_trigger(trigger_source_t source, pid_t target_pid,
         settle_to_idle();
         atomic_store(&g_trigger_source, TRIGGER_NONE);
         if (g_trigger_secure_field) { CFRelease(g_trigger_secure_field); g_trigger_secure_field = NULL; }
-        vfs5011_notify_swipe_failed();
+        vfs5011_notify_swipe_cancelled();
         return;
     }
     pthread_detach(loader_thread);
@@ -2188,6 +2189,7 @@ static void *polling_thread_main(void *arg) {
             }
 
             if (ok_to_type && password_valid_snapshot) {
+                vfs5011_episode_matched(); /* typing unlocks the screen: don't let that read as a cancel */
                 type_password_and_enter(password_snapshot);
                 print_timestamp();
                 printf("Typed.\n");

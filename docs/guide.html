@@ -31,9 +31,9 @@ chmod +x prep_and_build.sh
 [2] Verify Fingerprint Match [Score / x ]
 [3] Deploy Authentication Services
 [C] View Fingerprint (capture preview, nothing saved)
-[P] (Metallica MIS only) Pair
+[P] (Metallica MIS and Prometheus 97 only) Pair
 [U] (UPEK 147e:2016 only) capture .pgm
-[B] Capture (experimental, Metallica MIS only)
+[B] Capture (experimental, Metallica MIS and Prometheus 97 only)
 [FP] Fpbootd, Pre-Login Auth (coming soon)
 
 Utilities
@@ -60,8 +60,8 @@ Utilities
 <tr><td><code>--debug-full</code></td><td>Same as <code>--debug</code>, but never truncates large payloads.</td></tr>
 <tr><td><code>--list-records</code></td><td>Read-only. List the storage, users and enrolled fingers stored on the sensor, plus database size and free space.</td></tr>
 <tr><td><code>--wipe-records</code></td><td>Delete all enrolled prints stored on the sensor. Destructive, cannot be undone.</td></tr>
-<tr><td><code>--enroll-test</code></td><td>Metallica MIS only. Calibrate, enroll one finger on the sensor and exit. Tester tool, run it with <code>--debug</code>.</td></tr>
-<tr><td><code>--verify-test</code></td><td>Metallica MIS only. Calibrate, touch once, match against the print saved by <code>--enroll-test</code> and exit. Run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--enroll-test</code></td><td>Metallica MIS and Prometheus 97 only. Calibrate, enroll one finger on the sensor and exit. Tester tool, run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--verify-test</code></td><td>Metallica MIS and Prometheus 97 only. Calibrate, touch once, match against the print saved by <code>--enroll-test</code> and exit. Run it with <code>--debug</code>.</td></tr>
 <tr><td><code>--force-pair</code></td><td>Experimental. Try to pair the sensor by writing its identity partitions. A sensor that is already paired refuses this (error <code>0x0404</code>), so use the two host flags below instead.</td></tr>
 <tr><td><code>--host-product "&lt;name&gt;"</code></td><td>Override the product name used to derive the pairing key. Use the laptop's real value, not the spoofed Mac one. Use with <code>--host-serial</code>. Applies to this run only.</td></tr>
 <tr><td><code>--host-serial "&lt;serial&gt;"</code></td><td>Override the serial used to derive the pairing key. Use the laptop's real value. Use with <code>--host-product</code>. Applies to this run only.</td></tr>
@@ -69,9 +69,9 @@ Utilities
 <tr><td><code>--pane</code></td><td>Open the installed preference pane instead of the CLI client.</td></tr>
 <tr><td><code>--list-fingers</code></td><td>Print the enrolled prints as JSON and exit. Used by the Settings pane.</td></tr>
 <tr><td><code>--rename-finger</code></td><td>Use with <code>--finger-id &lt;ID&gt; --finger-name "&lt;name&gt;"</code>. Rename a print and exit.</td></tr>
-<tr><td><code>--delete-finger</code></td><td>Use with <code>--finger-id &lt;ID&gt;</code>. Remove a print and exit. Not available on Metallica MIS.</td></tr>
-<tr><td><code>--mmis-connect</code></td><td>Metallica MIS only. Open a session with the sensor and report the result. Used by the Settings pane.</td></tr>
-<tr><td><code>--mmis-calibrate</code></td><td>Metallica MIS only. Run the calibration and report the result. Used by the Settings pane.</td></tr>
+<tr><td><code>--delete-finger</code></td><td>Use with <code>--finger-id &lt;ID&gt;</code>. Remove a print and exit. Not available on Metallica MIS or Prometheus 97.</td></tr>
+<tr><td><code>--mmis-connect</code></td><td>Metallica MIS and Prometheus 97 only. Open a session with the sensor and report the result. Used by the Settings pane.</td></tr>
+<tr><td><code>--mmis-calibrate</code></td><td>Metallica MIS and Prometheus 97 only. Run the calibration and report the result. Used by the Settings pane.</td></tr>
 <tr><td><code>--fpbootd-daemon</code></td><td>Run the client as the Fpbootd pre-login socket server. Started by the Fpbootd install, you should not need to run it yourself.</td></tr>
 </tbody></table></div><p class="note">This list changes over time. New arguments are announced in the <a href="docs.html#changelog">changelog</a>.</p></section>
 <section id="menubar"><h2>Menu bar app (optional)</h2>
@@ -83,9 +83,10 @@ chmod +x build_menubar_app.sh
 open "build/Hackintosh Touch-ID.app"</code></pre>
 <ul><li>First launch is blocked by Gatekeeper because the app is ad-hoc signed. Right-click, Open, Open again, or run <code>xattr -cr "Hackintosh Touch-ID.app"</code>.</li>
 <li>The daemon needs a small patch to send events to the app. See the <a href="https://github.com/hackintosh-user/hack-touchid/blob/main/Hackintosh-TouchID-Menubar/daemon-patch/README.md">daemon patch README</a>.</li>
-<li>For useful notifications, set System Settings, Notifications, Show Previews to <b>Always</b>.</li>
+<li>While a prompt (padlock, Passwords, Keychain Access) needs your finger, a card appears at the top middle of the screen, above all apps. It needs no notification permission. Run <code>HackintoshTouchID --overlay-demo</code> to preview every card.</li>
+<li>macOS draws the lock screen above every app window, so on the lock screen the app uses a Notification Center banner instead. For readable banners, set System Settings, Notifications, Show Previews to <b>Always</b>.</li>
 <li>Pause and resume is global, it affects every recognized prompt at once.</li>
-<li>Swipe notifications are cleared from Notification Center automatically after each swipe, so they do not pile up.</li></ul>
+<li>Lock screen banners are cleared from Notification Center automatically after each attempt, so they do not pile up.</li></ul>
 <h3>Swipe to Lock (macOS Tahoe only)</h3>
 <p class="note"><b>macOS 26 Tahoe only</b>, and VFS5011 sensors only. The menu item does not appear on earlier macOS versions, and the daemon ignores the setting there.</p>
 <ul><li>Choose <b>Enable Swipe to Lock</b> in the menu bar app. The sensor lights up, and one swipe locks the screen (Ctrl+Cmd+Q). Choose <b>Disable Swipe to Lock</b> to turn it off.</li>

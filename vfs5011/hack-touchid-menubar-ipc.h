@@ -37,6 +37,7 @@
 #define VFS5011_NOTIFY_SWIPE_FAILED      VFS5011_NOTIFY_PREFIX ".swipe_failed"
 #define VFS5011_NOTIFY_SWIPE_LOCKOUT     VFS5011_NOTIFY_PREFIX ".swipe_lockout"
 #define VFS5011_NOTIFY_SWIPE_WEAK        VFS5011_NOTIFY_PREFIX ".swipe_weak"
+#define VFS5011_NOTIFY_SWIPE_CANCELLED   VFS5011_NOTIFY_PREFIX ".swipe_cancelled"
 
 /* Daemon -> menu bar app (state confirmation) */
 #define VFS5011_NOTIFY_SCANNING_ENABLED  VFS5011_NOTIFY_PREFIX ".scanning_enabled"
@@ -141,5 +142,12 @@ void vfs5011_notify_swipe_success(void);   /* after a match is confirmed AND typ
 void vfs5011_notify_swipe_failed(void);    /* after a real captured swipe scores below MATCH_THRESHOLD */
 void vfs5011_notify_swipe_weak(void);      /* a swipe was captured but had too few minutiae to be scored */
 void vfs5011_notify_swipe_lockout(void);   /* too many failed swipes in a row: the episode is over, use the password */
+/* The auth episode ended without a result (prompt dismissed, screen unlocked another way, could not start).
+ * Only posts if an episode is still open, i.e. no success or lockout was announced for it, so it is safe to
+ * call from every place an episode ends. */
+void vfs5011_notify_swipe_cancelled(void);
+/* Call the moment a match is confirmed, BEFORE the password is typed: typing unlocks the screen, and the
+ * unlock handler would otherwise report the episode as cancelled before the success event is posted. */
+void vfs5011_episode_matched(void);
 
 #endif /* VFS5011_MENUBAR_IPC_H */

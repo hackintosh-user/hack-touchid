@@ -75,6 +75,12 @@
 #endif
 #include "upek_proto.h"
 #include "upek_daemon.h"
+#ifdef HT_WITH_VFS7552
+/* VFS7552 (138a:0092): libusb-only probe + HP firmware fetch. Only compiled
+ * in when the build includes the vfs7552 family, see scripts/build_client.sh. */
+#include "vfs7552_probe.h"
+#include "vfs7552_firmware.h"
+#endif
 
 #define VFS5011_VID 0x138a
 #define VFS5011_PID 0x0018
@@ -790,6 +796,14 @@ static bool g_enroll_test_mode = false;
  * says whether it matches a print saved by --enroll-test
  * (metallica_mis_do_verify_test()). Survives the sudo re-exec. */
 static bool g_verify_test_mode = false;
+
+/* Set by argv parsing in main() for the VFS7552 (138a:0092) tester flags.
+ * --probe-7552: read-only USB probe (descriptors + RomInfo and two query
+ * commands), nothing is written to the sensor. --fetch-fw-7552: download
+ * HP's SoftPaq SP135737, verify it and extract the firmware with 7-Zip.
+ * Both survive the sudo re-exec. */
+static bool g_probe_7552_mode = false;
+static bool g_fetch_fw_7552_mode = false;
 
 /* Set by argv parsing in main() when "--check-updates" is passed.
  * Same headless-dispatch pattern as g_diag_pid_mode/g_deploy_agent_mode
@@ -2132,6 +2146,8 @@ static void print_usage(void) {
     printf("                      (experimental, tester tool, run with --debug)\n");
     printf("  --verify-test       Metallica MIS: calibrate, touch once, match against a print saved by\n");
     printf("                      --enroll-test and exit (experimental, run with --debug)\n");
+    printf("  --probe-7552        VFS7552 (138a:0092): read-only USB probe and exit (tester tool, run with --debug)\n");
+    printf("  --fetch-fw-7552     VFS7552: download HP's SoftPaq, verify it and extract the firmware, then exit\n");
     printf("  --cli               Skip the preference pane question and start the CLI client\n");
     printf("  --pane              Open the installed preference pane instead of the CLI client\n");
     printf("  --list-fingers      Print the enrolled prints as JSON and exit (used by the Settings pane)\n");
@@ -7527,8 +7543,8 @@ static bool ht_file_exists(const char *path) {
     return access(path, F_OK) == 0;
 }
 
-/* Checks the same two Homebrew prefixes the build scripts know about
- * (Intel /usr/local first, then /opt/homebrew). */
+/* Checks the same prefixes the build scripts know about: the two Homebrew ones (Intel /usr/local
+ * first, then /opt/homebrew), then MacPorts (/opt/local). */
 static bool ht_dep_present(unsigned bit) {
     static const char *prefixes[] = { "/usr/local", "/opt/homebrew" };
     char path[PATH_MAX];
@@ -7543,15 +7559,32 @@ static bool ht_dep_present(unsigned bit) {
             case HT_DEP_INNOEXTRACT:
                 snprintf(path, sizeof(path), "%s/bin/innoextract", prefixes[i]);
                 break;
+            case HT_DEP_SEVENZIP:
+                snprintf(path, sizeof(path), "%s/bin/7zz", prefixes[i]);
+                break;
             default:
                 return true;
         }
         if (ht_file_exists(path)) return true;
     }
+    /* MacPorts keeps everything under /opt/local; its OpenSSL 3 is in libexec/openssl3. */
+    {
+        const char *port_path = NULL;
+        switch (bit) {
+            case HT_DEP_LIBUSB:      port_path = "/opt/local/lib/libusb-1.0.dylib"; break;
+            case HT_DEP_OPENSSL:     port_path = "/opt/local/libexec/openssl3/lib/libssl.3.dylib"; break;
+            case HT_DEP_INNOEXTRACT: port_path = "/opt/local/bin/innoextract"; break;
+            case HT_DEP_SEVENZIP:    port_path = "/opt/local/bin/7zz"; break;
+            default: break;
+        }
+        if (port_path && ht_file_exists(port_path)) return true;
+    }
     /* sudo often strips Homebrew from PATH, so the file checks above are
      * the real test; PATH is only a last resort for odd installs. */
     if (bit == HT_DEP_INNOEXTRACT)
         return system("command -v innoextract >/dev/null 2>&1") == 0;
+    if (bit == HT_DEP_SEVENZIP)
+        return system("command -v 7zz >/dev/null 2>&1 || command -v 7z >/dev/null 2>&1") == 0;
     return false;
 }
 
@@ -7559,6 +7592,27 @@ static const char *ht_find_brew(void) {
     if (ht_file_exists("/usr/local/bin/brew"))    return "/usr/local/bin/brew";
     if (ht_file_exists("/opt/homebrew/bin/brew")) return "/opt/homebrew/bin/brew";
     return NULL;
+}
+
+/* MacPorts' port tool, when it is installed (used when Homebrew is not). */
+static const char *ht_find_port(void) {
+    if (ht_file_exists("/opt/local/bin/port")) return "/opt/local/bin/port";
+    return NULL;
+}
+
+/* Turns the Homebrew formula names in `formulas` (space separated, as supported_sensors.h
+ * spells them) into MacPorts package names: openssl@3 is openssl3, sevenzip is 7zip. */
+static void ht_port_names(const char *formulas, char *out, size_t out_size) {
+    out[0] = '\0';
+    char copy[256];
+    snprintf(copy, sizeof(copy), "%s", formulas);
+    for (char *save = NULL, *tok = strtok_r(copy, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+        const char *name = tok;
+        if (strcmp(tok, "openssl@3") == 0) name = "openssl3";
+        else if (strcmp(tok, "sevenzip") == 0) name = "7zip";
+        size_t used = strlen(out);
+        snprintf(out + used, out_size - used, "%s%s", used ? " " : "", name);
+    }
 }
 
 static bool check_sensor_dependencies(void) {
@@ -7598,7 +7652,32 @@ static bool check_sensor_dependencies(void) {
     const char *brew = ht_find_brew();
     const char *sudo_user = getenv("SUDO_USER");
     if (!brew) {
-        printf("Homebrew was not found. Install it, then run: brew install %s\n", formulas);
+        const char *port = ht_find_port();
+        if (!port) {
+            printf("Neither Homebrew nor MacPorts was found. Install one, then run: brew install %s\n", formulas);
+            return true;
+        }
+        /* MacPorts instead of Homebrew. port needs root, and this client normally already is. */
+        char ports[256];
+        ht_port_names(formulas, ports, sizeof(ports));
+        if (!isatty(STDIN_FILENO)) {
+            printf("Install with: sudo port install %s\n", ports);
+            return true;
+        }
+        printf("Install only these now with MacPorts? [y/N] ");
+        fflush(stdout);
+        char port_answer[16] = "";
+        if (!fgets(port_answer, sizeof(port_answer), stdin) || (port_answer[0] != 'y' && port_answer[0] != 'Y')) {
+            printf("Skipped. Install later with: sudo port install %s\n", ports);
+            return true;
+        }
+        char port_cmd[512];
+        snprintf(port_cmd, sizeof(port_cmd), "%s\"%s\" install %s", geteuid() == 0 ? "" : "sudo ", port, ports);
+        if (system(port_cmd) != 0) {
+            vfsc_warn("MacPorts could not finish the install. Run it yourself: sudo port install %s\n", ports);
+            return true;
+        }
+        vfsc_status_line_ok("Dependencies installed.");
         return true;
     }
     if (!isatty(STDIN_FILENO)) {
@@ -8425,6 +8504,33 @@ static void sensor_yield_begin(void) {
     usleep(300000); /* let macOS settle the device before we open it */
 }
 
+/* --probe-7552 / --fetch-fw-7552: VFS7552 (138a:0092) tester tools. Returns
+ * the process exit code. In a build without the vfs7552 family it only tells
+ * the user how to rebuild. */
+static int run_vfs7552_tools(void) {
+#ifdef HT_WITH_VFS7552
+    int rc = 0;
+    if (g_fetch_fw_7552_mode) {
+        if (!vfs7552_firmware_fetch()) return 1;
+        char fw_path[PATH_MAX];
+        if (vfs7552_firmware_path(fw_path, sizeof(fw_path)) == 0)
+            printf("Firmware ready: %s\n", fw_path);
+    }
+    if (g_probe_7552_mode) {
+        printf("VFS7552 firmware file: %s\n",
+               vfs7552_firmware_is_present() ? "present"
+                                              : "not downloaded yet (run --fetch-fw-7552, not needed for this probe)");
+        rc = vfs7552_probe_run(g_metallica_mis_debug);
+    }
+    return rc;
+#else
+    vfsc_warn("This build has no VFS7552 support (it was built for a different sensor).\n");
+    vfsc_warn("Rebuild with:\n");
+    vfsc_warn("  ./prep_and_build.sh --sensor vfs7552\n");
+    return 1;
+#endif
+}
+
 int main(int argc, char **argv) {
     /* Checked in its own pass, before anything else (including the
      * sudo re-exec below) -- seeing -h/--help should never require a
@@ -8494,6 +8600,14 @@ int main(int argc, char **argv) {
         }
         if (strcmp(argv[i], "--verify-test") == 0) {
             g_verify_test_mode = true;
+            g_verbose_boot = false;
+        }
+        if (strcmp(argv[i], "--probe-7552") == 0) {
+            g_probe_7552_mode = true;
+            g_verbose_boot = false;
+        }
+        if (strcmp(argv[i], "--fetch-fw-7552") == 0) {
+            g_fetch_fw_7552_mode = true;
             g_verbose_boot = false;
         }
         if (strcmp(argv[i], "--fpbootd-daemon") == 0) {
@@ -8577,6 +8691,8 @@ int main(int argc, char **argv) {
         if (g_records_wipe_mode) sudo_argv[ai++] = "--wipe-records";
         if (g_enroll_test_mode) sudo_argv[ai++] = "--enroll-test";
         if (g_verify_test_mode) sudo_argv[ai++] = "--verify-test";
+        if (g_probe_7552_mode) sudo_argv[ai++] = "--probe-7552";
+        if (g_fetch_fw_7552_mode) sudo_argv[ai++] = "--fetch-fw-7552";
         if (g_fpbootd_daemon_mode) sudo_argv[ai++] = "--fpbootd-daemon";
         if (g_fingers_cmd == HT_FINGERS_LIST) sudo_argv[ai++] = "--list-fingers";
         if (g_fingers_cmd == HT_FINGERS_RENAME) sudo_argv[ai++] = "--rename-finger";
@@ -8686,6 +8802,13 @@ int main(int argc, char **argv) {
         g_detected_sensor = detect_supported_sensor();
         run_records_mode();
         return 0;
+    }
+
+    /* --probe-7552 / --fetch-fw-7552: VFS7552 tester tools. They talk to the
+     * USB device (or just fetch the firmware) and never touch the menu, the
+     * daemon or any stored print, so they dispatch before everything else. */
+    if (g_probe_7552_mode || g_fetch_fw_7552_mode) {
+        return run_vfs7552_tools();
     }
 
     /* --enroll-test: headless Metallica MIS enrollment test, same

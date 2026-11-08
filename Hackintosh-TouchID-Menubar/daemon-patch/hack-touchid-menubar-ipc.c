@@ -19,6 +19,8 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <stdatomic.h>
+#include <stdbool.h>
 
 /* Read far more often (every arm_polling_for_trigger() call) than
  * written (only on a user-initiated toggle from the menu bar), so a
@@ -122,13 +124,19 @@ bool vfs5011_scanning_is_enabled(void) {
 
 /* --- Public: event posts --- */
 
+/* True from swipe_requested until success, lockout or cancelled has been announced, so a
+ * "cancelled" is only ever sent for an episode that really ended without a result. */
+static atomic_bool g_episode_open = false;
+
 void vfs5011_notify_swipe_requested(void) {
+    atomic_store(&g_episode_open, true);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDistributedCenter(),
                                           CFSTR(VFS5011_NOTIFY_SWIPE_REQUESTED),
                                           NULL, NULL, TRUE);
 }
 
 void vfs5011_notify_swipe_success(void) {
+    atomic_store(&g_episode_open, false);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDistributedCenter(),
                                           CFSTR(VFS5011_NOTIFY_SWIPE_SUCCESS),
                                           NULL, NULL, TRUE);
@@ -146,7 +154,19 @@ void vfs5011_notify_swipe_weak(void) {
                                           NULL, NULL, TRUE);
 }
 
+void vfs5011_notify_swipe_cancelled(void) {
+    if (!atomic_exchange(&g_episode_open, false)) return; /* nothing open, or a result was already shown */
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDistributedCenter(),
+                                          CFSTR(VFS5011_NOTIFY_SWIPE_CANCELLED),
+                                          NULL, NULL, TRUE);
+}
+
+void vfs5011_episode_matched(void) {
+    atomic_store(&g_episode_open, false);
+}
+
 void vfs5011_notify_swipe_lockout(void) {
+    atomic_store(&g_episode_open, false);
     CFNotificationCenterPostNotification(CFNotificationCenterGetDistributedCenter(),
                                           CFSTR(VFS5011_NOTIFY_SWIPE_LOCKOUT),
                                           NULL, NULL, TRUE);

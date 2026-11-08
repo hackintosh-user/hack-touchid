@@ -129,6 +129,7 @@ enum VFS5011Notification {
     static let swipeFailed      = "\(prefix).swipe_failed"
     static let swipeLockout     = "\(prefix).swipe_lockout"
     static let swipeWeak        = "\(prefix).swipe_weak"
+    static let swipeCancelled   = "\(prefix).swipe_cancelled"
 
     // Daemon -> menu bar app (state confirmation, so the UI is correct
     // even if the app launches after the daemon, or the daemon restarts)
@@ -209,6 +210,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     private var statusItem: NSStatusItem!
+    // The on-screen auth card (top middle, above every app). Replaces the old
+    // Notification Center banners for swipe/touch prompts and results.
+    private let authOverlay = AuthOverlay()
+    // True from "swipe requested" until a final result (success, lockout, cancelled), so a
+    // failed or weak attempt can drop back to the Waiting card.
+    private var authEpisodeOpen = false
+    // True if that episode began on the lock screen. macOS draws the lock screen above every app
+    // window, so there the app falls back to a Notification Center banner, as before.
+    private var authEpisodeStartedLocked = false
+    // "Cancelled" waits a moment so a success that follows an unlock can cancel it.
+    private var pendingCancel: DispatchWorkItem?
+    // The daemon can re-arm for a moment right after a success (the unlock itself looks like a new
+    // prompt). Anything that starts within this window after a result is not shown.
+    private var lastAuthEnd: Date?
+    private var suppressedEpisode = false
+    private let rearmGraceSeconds: TimeInterval = 4.0
     private var clientUpdateTimer: Timer?
     private var aboutWindow: NSWindow?
     private var scanningEnabled: Bool = true {
@@ -241,6 +258,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         requestNotificationPermission()
         registerForDaemonNotifications()
         registerAsLoginItemIfNeeded()
+
+        // The lock screen covers any window, so drop the card as soon as the screen locks.
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            if !AuthOverlay.cardWorksOnLockScreen { self?.authOverlay.hide() }
+        }
+
+        // Preview for design checks: `HackintoshTouchID --overlay-demo` cycles every card.
+        if CommandLine.arguments.contains("--overlay-demo") {
+            authOverlay.runDemo()
+        }
 
         // Known trigger for a missing/broken daemon (per project notes):
         // a macOS point update wipes it, similar to OCLP root patches
@@ -866,6 +895,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             VFS5011Notification.swipeFailed,
             VFS5011Notification.swipeLockout,
             VFS5011Notification.swipeWeak,
+            VFS5011Notification.swipeCancelled,
             VFS5011Notification.scanningEnabled,
             VFS5011Notification.scanningDisabled,
             VFS5011Notification.lockswipeEnabled,
@@ -920,6 +950,41 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         )
     }
 
+    // The same flag the daemon reads: present (and true) only while the screen is locked.
+    private func isScreenLocked() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
+    }
+
+    // Unlocked: the overlay card. Locked: a Notification Center banner, because no app window can
+    // be drawn above the lock screen.
+    private func showAuth(_ kind: AuthOverlayKind, thenWaiting: Bool = false) {
+        let locked = isScreenLocked()
+        if !locked {
+            authOverlay.show(kind, thenWaiting: thenWaiting)
+            return
+        }
+        if AuthOverlay.cardWorksOnLockScreen {
+            // The card shows above the lock screen through SkyLight, so no banner is needed.
+            authOverlay.show(kind, thenWaiting: thenWaiting)
+            return
+        }
+        authOverlay.hide()
+        let body: String
+        switch kind {
+        case .waiting:       body = "Waiting for fingerprint 🔻"
+        case .success:       body = "Authenticated ✅"
+        case .notRecognized: body = "Not recognized, please try again ❌"
+        case .incomplete:    body = "Incomplete swipe, please try again 🔻"
+        case .lockout:       body = "Too many attempts, use your password ❌"
+        case .cancelled:     return
+        }
+        clearSwipeNotifications(after: 0) { [weak self] in
+            self?.fireLocalNotification(title: "Hackintosh Touch-ID", body: body)
+            if kind != .waiting { self?.clearSwipeNotifications(after: 10.0) }
+        }
+    }
+
     private func handleDaemonNotification(_ name: String) {
         // Distributed notifications can arrive on a background thread.
         DispatchQueue.main.async { [weak self] in
@@ -927,47 +992,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
             switch name {
             case VFS5011Notification.swipeRequested:
-                // Drop leftovers first, and only then post the new prompt,
-                // so the clean-up can never remove the prompt itself.
-                self.clearSwipeNotifications(after: 0) { [weak self] in
-                    self?.fireLocalNotification(
-                        title: "Hackintosh Touch-ID",
-                        body: "Swipe to authenticate! 🔻"
-                    )
+                self.pendingCancel?.cancel()
+                if let t = self.lastAuthEnd, Date().timeIntervalSince(t) < self.rearmGraceSeconds {
+                    self.suppressedEpisode = true // a re-arm right after a success: stay quiet
+                    return
                 }
+                self.suppressedEpisode = false
+                self.authEpisodeOpen = true
+                self.authEpisodeStartedLocked = self.isScreenLocked()
+                self.showAuth(.waiting)
 
             case VFS5011Notification.swipeSuccess:
-                self.fireLocalNotification(
-                    title: "Hackintosh Touch-ID",
-                    body: "Authentication successful! ✅"
-                )
-                self.clearSwipeNotifications(after: 10.0)
+                self.pendingCancel?.cancel()
+                self.suppressedEpisode = false
+                self.lastAuthEnd = Date()
+                self.authEpisodeOpen = false
+                self.showAuth(.success)
 
             case VFS5011Notification.swipeFailed:
-                self.fireLocalNotification(
-                    title: "Hackintosh Touch-ID",
-                    body: "Authentication failed, try swiping better ❌"
-                )
-                self.clearSwipeNotifications(after: 10.0)
+                if self.suppressedEpisode { return }
+                self.showAuth(.notRecognized, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeWeak:
-                self.clearSwipeNotifications(after: 0) { [weak self] in
-                    self?.fireLocalNotification(
-                        title: "Hackintosh Touch-ID",
-                        body: "Swipe was too weak, please try again 🔻"
-                    )
-                    self?.clearSwipeNotifications(after: 10.0)
-                }
+                if self.suppressedEpisode { return }
+                self.showAuth(.incomplete, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeLockout:
-                // Same ordering as the prompt: clear the leftover "try
-                // swiping better" banner first, then post the final one.
-                self.clearSwipeNotifications(after: 0) { [weak self] in
-                    self?.fireLocalNotification(
-                        title: "Hackintosh Touch-ID",
-                        body: "Authentication failed, use your password ❌"
-                    )
-                    self?.clearSwipeNotifications(after: 10.0)
+                self.pendingCancel?.cancel()
+                self.suppressedEpisode = false
+                self.lastAuthEnd = Date()
+                self.authEpisodeOpen = false
+                self.showAuth(.lockout)
+
+            case VFS5011Notification.swipeCancelled:
+                self.pendingCancel?.cancel()
+                if self.suppressedEpisode { self.suppressedEpisode = false; return }
+                let startedLocked = self.authEpisodeStartedLocked
+                self.authEpisodeOpen = false
+                if startedLocked {
+                    // Unlocked with the password: nothing to show, just clear the leftover banner.
+                    self.authOverlay.hide()
+                    self.clearSwipeNotifications(after: 0)
+                } else {
+                    let work = DispatchWorkItem { [weak self] in self?.authOverlay.show(.cancelled) }
+                    self.pendingCancel = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
                 }
 
             case VFS5011Notification.scanningEnabled:
@@ -975,6 +1044,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
             case VFS5011Notification.scanningDisabled:
                 self.scanningEnabled = false
+                self.authEpisodeOpen = false
+                self.authOverlay.hide()
 
             case VFS5011Notification.lockswipeEnabled:
                 self.lockSwipeEnabled = true
@@ -985,6 +1056,354 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             default:
                 break
             }
+        }
+    }
+}
+
+
+// MARK: - Auth overlay (top middle, above every app)
+
+// The five cards from the design: Waiting (white), Authenticated (green), Not recognized (red),
+// Incomplete swipe (yellow) and Cancelled (cyan, with a close button). Lockout reuses the red style.
+enum AuthOverlayKind {
+    case waiting, success, notRecognized, incomplete, lockout, cancelled
+
+    var title: String {
+        switch self {
+        case .waiting:       return "Waiting for fingerprint"
+        case .success:       return "Authenticated"
+        case .notRecognized: return "Not recognized"
+        case .incomplete:    return "Incomplete swipe"
+        case .lockout:       return "Too many attempts, use your password"
+        case .cancelled:     return "Cancelled"
+        }
+    }
+    var subtitle: String? { self == .cancelled ? "Authentication cancelled." : nil }
+    var symbol: String {
+        switch self {
+        case .waiting, .cancelled: return "touchid"
+        case .success:             return "checkmark.circle"
+        case .notRecognized, .lockout: return "xmark.circle"
+        case .incomplete:          return "exclamationmark.circle"
+        }
+    }
+    var accent: NSColor {
+        switch self {
+        case .waiting:       return NSColor(calibratedWhite: 0.94, alpha: 1)
+        case .success:       return NSColor(calibratedRed: 0.20, green: 0.80, blue: 0.45, alpha: 1)
+        case .notRecognized, .lockout: return NSColor(calibratedRed: 0.93, green: 0.30, blue: 0.32, alpha: 1)
+        case .incomplete:    return NSColor(calibratedRed: 0.96, green: 0.78, blue: 0.20, alpha: 1)
+        case .cancelled:     return NSColor(calibratedRed: 0.20, green: 0.78, blue: 0.90, alpha: 1)
+        }
+    }
+    // Seconds on screen. nil = stays until the next event (Waiting).
+    var lifetime: TimeInterval? {
+        switch self {
+        case .waiting:       return nil
+        case .success:       return 1.6
+        case .notRecognized, .incomplete: return 2.2
+        case .lockout:       return 4.0
+        case .cancelled:     return 4.0
+        }
+    }
+}
+
+// Draws one card: dark rounded rectangle, 1.5 pt accent border, icon on the left, text on the right.
+final class AuthCardView: NSView {
+    var onClose: (() -> Void)?
+    private let kind: AuthOverlayKind
+
+    init(kind: AuthOverlayKind) {
+        self.kind = kind
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedWhite: 0.10, alpha: 0.97).cgColor
+        layer?.borderColor = kind.accent.cgColor
+        layer?.borderWidth = 1.5
+        layer?.cornerRadius = kind.subtitle == nil ? 16 : 18
+
+        let icon = NSImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        if let img = NSImage(systemSymbolName: kind.symbol, accessibilityDescription: kind.title) {
+            let cfg = NSImage.SymbolConfiguration(pointSize: kind.subtitle == nil ? 17 : 26, weight: .regular)
+            icon.image = img.withSymbolConfiguration(cfg)
+        }
+        icon.contentTintColor = kind.accent
+        addSubview(icon)
+
+        let title = NSTextField(labelWithString: kind.title)
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.textColor = NSColor(calibratedWhite: 0.97, alpha: 1)
+        title.font = NSFont.systemFont(ofSize: kind.subtitle == nil ? 14 : 16, weight: kind.subtitle == nil ? .medium : .semibold)
+        title.lineBreakMode = .byTruncatingTail
+
+        let stack = NSStackView(views: [title])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        if let sub = kind.subtitle {
+            let subtitle = NSTextField(labelWithString: sub)
+            subtitle.textColor = NSColor(calibratedWhite: 0.70, alpha: 1)
+            subtitle.font = NSFont.systemFont(ofSize: 12.5, weight: .regular)
+            stack.addArrangedSubview(subtitle)
+        }
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        if kind == .cancelled {
+            let close = NSButton(title: "", target: self, action: #selector(closeTapped))
+            close.translatesAutoresizingMaskIntoConstraints = false
+            close.isBordered = false
+            close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+            close.contentTintColor = kind.accent
+            addSubview(close)
+            NSLayoutConstraint.activate([
+                close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+                close.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+                close.widthAnchor.constraint(equalToConstant: 20),
+                close.heightAnchor.constraint(equalToConstant: 20),
+                stack.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -8),
+            ])
+        } else {
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -18).isActive = true
+        }
+
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(kind.subtitle.map { "\(kind.title). \($0)" } ?? kind.title)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    @objc private func closeTapped() { onClose?() }
+
+    // Card size, measured from the text so it never depends on layout timing. Floors keep the
+    // short ones looking like the design.
+    var preferredSize: NSSize {
+        let hasSub = kind.subtitle != nil
+        let titleFont = NSFont.systemFont(ofSize: hasSub ? 16 : 14, weight: hasSub ? .semibold : .medium)
+        var textW = (kind.title as NSString).size(withAttributes: [.font: titleFont]).width
+        if let sub = kind.subtitle {
+            let subW = (sub as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12.5)]).width
+            textW = max(textW, subW)
+        }
+        let iconW: CGFloat = hasSub ? 30 : 20
+        let closeW: CGFloat = hasSub ? 34 : 0
+        let width = ceil(16 + iconW + 12 + textW + 18 + closeW)
+        return hasSub ? NSSize(width: max(272, width), height: 80) : NSSize(width: max(250, width), height: 50)
+    }
+}
+
+// EXPERIMENT: puts a window into its own window server "space" at the level macOS uses for the
+// notification center on the lock screen (400), above the lock screen UI (300). This is the same
+// private SkyLight call sequence that other lock screen apps use (for example the MIT licensed
+// SkyLightWindow package by Lakr233). Everything is looked up at runtime, so if any symbol is missing
+// on a macOS version, `shared` is nil and the app just keeps using banners on the lock screen.
+final class SkyLightSpace {
+    static let shared: SkyLightSpace? = SkyLightSpace()
+
+    private typealias MainConnectionID = @convention(c) () -> Int32
+    private typealias SpaceCreate = @convention(c) (Int32, Int32, Int32) -> Int32
+    private typealias SpaceSetAbsoluteLevel = @convention(c) (Int32, Int32, Int32) -> Int32
+    private typealias ShowSpaces = @convention(c) (Int32, CFArray) -> Int32
+    private typealias SpaceAddWindowsAndRemoveFromSpaces = @convention(c) (Int32, Int32, CFArray, Int32) -> Int32
+
+    private let connection: Int32
+    private let space: Int32
+    private let addWindows: SpaceAddWindowsAndRemoveFromSpaces
+
+    private init?() {
+        guard let h = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight", RTLD_NOW),
+              let pConn = dlsym(h, "SLSMainConnectionID"),
+              let pCreate = dlsym(h, "SLSSpaceCreate"),
+              let pLevel = dlsym(h, "SLSSpaceSetAbsoluteLevel"),
+              let pShow = dlsym(h, "SLSShowSpaces"),
+              let pAdd = dlsym(h, "SLSSpaceAddWindowsAndRemoveFromSpaces")
+        else { return nil }
+        let mainConnectionID = unsafeBitCast(pConn, to: MainConnectionID.self)
+        let spaceCreate = unsafeBitCast(pCreate, to: SpaceCreate.self)
+        let setLevel = unsafeBitCast(pLevel, to: SpaceSetAbsoluteLevel.self)
+        let showSpaces = unsafeBitCast(pShow, to: ShowSpaces.self)
+        addWindows = unsafeBitCast(pAdd, to: SpaceAddWindowsAndRemoveFromSpaces.self)
+        connection = mainConnectionID()
+        space = spaceCreate(connection, 1, 0)
+        _ = setLevel(connection, space, 400) // kSLSSpaceAbsoluteLevelNotificationCenterAtScreenLock
+        _ = showSpaces(connection, [space] as CFArray)
+    }
+
+    func delegate(_ window: NSWindow) {
+        guard window.windowNumber > 0 else { return }
+        _ = addWindows(connection, space, [window.windowNumber] as CFArray, 7)
+    }
+}
+
+// One borderless panel, reused. Level is the assistive-technology window level, which sits above
+// normal windows, full-screen apps and the menu bar, so it needs no notification permission.
+final class AuthOverlay {
+    private var panel: NSPanel?
+    private var hideWork: DispatchWorkItem?
+    private let waitingSafetySeconds: TimeInterval = 90 // never leave a stale Waiting card up
+
+    // EXPERIMENT: try to draw the card above the lock screen. Off by default; turn on with
+    //   defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool YES
+    // then quit and relaunch the menu bar app. macOS may still hide it there.
+    // On by default. Turn off with: defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool NO
+    static var lockScreenExperiment: Bool {
+        (UserDefaults.standard.object(forKey: "OverlayOnLockScreen") as? Bool) ?? true
+    }
+    // The card can only show on the lock screen if the SkyLight calls are available.
+    static var cardWorksOnLockScreen: Bool { lockScreenExperiment && SkyLightSpace.shared != nil }
+    // Diagnostics log only when explicitly set to YES.
+    static var overlayDebugLog: Bool { UserDefaults.standard.bool(forKey: "OverlayOnLockScreen") }
+
+    private func makePanel() -> NSPanel {
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 50),
+                        styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = true
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.becomesKeyOnlyIfNeeded = true
+        applyLevel(to: p)
+        p.isReleasedWhenClosed = false
+        return p
+    }
+
+    private func applyLevel(to p: NSPanel) {
+        if AuthOverlay.lockScreenExperiment {
+            // Same window settings as the SkyLightWindow reference: top level, joins all spaces. The
+            // window is moved into the lock screen level space in present().
+            p.level = NSWindow.Level(rawValue: Int(Int32.max - 2))
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+            // The AppKit switch that allows a window to be shown at the login window / lock screen.
+            p.canBecomeVisibleWithoutLogin = true
+        } else {
+            p.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        }
+    }
+
+    // Shows a card. thenWaiting: after a timed card (a failed or weak attempt) go back to Waiting,
+    // because the sensor is still listening.
+    func show(_ kind: AuthOverlayKind, thenWaiting: Bool = false) {
+        DispatchQueue.main.async { [weak self] in self?.present(kind, thenWaiting: thenWaiting) }
+    }
+
+    func hide() {
+        DispatchQueue.main.async { [weak self] in self?.dismiss() }
+    }
+
+    private func present(_ kind: AuthOverlayKind, thenWaiting: Bool) {
+        hideWork?.cancel()
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
+
+        let card = AuthCardView(kind: kind)
+        card.onClose = { [weak self] in self?.dismiss() }
+        let size = card.preferredSize
+        card.frame = NSRect(origin: .zero, size: size)
+        panel.contentView = card
+        panel.ignoresMouseEvents = (kind != .cancelled) // only the Cancelled card has a button
+        applyLevel(to: panel) // follows the experiment flag without a relaunch of the panel
+
+        // Top middle of the screen that has the menu bar, just under it.
+        let screen = NSScreen.screens.first ?? NSScreen.main
+        let area = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let x = area.midX - size.width / 2
+        let y = area.maxY - size.height - 10
+        let wasVisible = panel.isVisible && panel.alphaValue > 0.01
+        panel.setFrame(NSRect(x: x, y: wasVisible ? y : y + 8, width: size.width, height: size.height), display: true)
+        if !wasVisible { panel.alphaValue = 0 }
+        panel.orderFrontRegardless()
+        if AuthOverlay.lockScreenExperiment { SkyLightSpace.shared?.delegate(panel) }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            panel.animator().alphaValue = 1
+            panel.animator().setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        }
+
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: kind.subtitle ?? kind.title])
+
+        if AuthOverlay.overlayDebugLog { scheduleLockDiagnostics(for: panel, kind: kind) }
+
+        let life = kind.lifetime ?? waitingSafetySeconds
+        let work = DispatchWorkItem { [weak self] in
+            if thenWaiting { self?.present(.waiting, thenWaiting: false) } else { self?.dismiss() }
+        }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + life, execute: work)
+    }
+
+    // EXPERIMENT diagnostics: after a card is shown, list what the window server says about the
+    // screen into /tmp/htid-overlay-debug.log, so we can see whether our window is on screen while
+    // locked and which window (layer) covers it.
+    private func scheduleLockDiagnostics(for panel: NSPanel, kind: AuthOverlayKind) {
+        let number = panel.windowNumber
+        let level = panel.level.rawValue
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            let locked = (session?["CGSSessionScreenIsLocked"] as? Bool) ?? false
+            var lines: [String] = []
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            lines.append("[\(stamp)] card=\(kind.title) locked=\(locked) ourWindow=\(number) ourLevel=\(level) shielding=\(CGShieldingWindowLevel()) canBecomeVisibleWithoutLogin=\(panel.canBecomeVisibleWithoutLogin) skyLight=\(SkyLightSpace.shared != nil) panelVisible=\(panel.isVisible) occlusion=\(panel.occlusionState.rawValue)")
+            if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
+                var ourOnScreen = false
+                for w in info {
+                    let num = (w[kCGWindowNumber as String] as? Int) ?? -1
+                    let layer = (w[kCGWindowLayer as String] as? Int) ?? 0
+                    let owner = (w[kCGWindowOwnerName as String] as? String) ?? "?"
+                    if num == number { ourOnScreen = true }
+                    if layer >= 20 || num == number {
+                        let name = (w[kCGWindowName as String] as? String) ?? ""
+                        let alpha = (w[kCGWindowAlpha as String] as? Double) ?? 1
+                        lines.append("    window \(num) owner=\(owner) name=\"\(name)\" layer=\(layer) alpha=\(alpha)")
+                    }
+                }
+                lines.append("    ourWindowOnScreenList=\(ourOnScreen) totalOnScreen=\(info.count)")
+            } else {
+                lines.append("    CGWindowListCopyWindowInfo returned nothing")
+            }
+            let text = lines.joined(separator: "\n") + "\n"
+            let path = "/tmp/htid-overlay-debug.log"
+            if let h = FileHandle(forWritingAtPath: path) {
+                h.seekToEndOfFile(); h.write(text.data(using: .utf8) ?? Data()); h.closeFile()
+            } else {
+                try? text.write(toFile: path, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+
+    private func dismiss() {
+        hideWork?.cancel()
+        hideWork = nil
+        guard let panel = panel, panel.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.18
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak panel] in
+            // A newer card may have been shown while this one faded out.
+            if let panel = panel, panel.alphaValue < 0.01 { panel.orderOut(nil) }
+        })
+    }
+
+    // Design preview: every card for a few seconds each.
+    func runDemo() {
+        let steps: [(AuthOverlayKind, TimeInterval)] = [
+            (.waiting, 0), (.incomplete, 3), (.notRecognized, 6), (.success, 9), (.cancelled, 12), (.lockout, 17)
+        ]
+        for (kind, delay) in steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1 + delay) { [weak self] in self?.show(kind) }
         }
     }
 }

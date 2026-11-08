@@ -10,7 +10,7 @@
   lock screen unlock and System Settings authentication prompts, driven by
   a real fingerprint sensor instead of a password.
   
-  * Current version: ```v1.1.0```
+  * Current version: ```v2.0.0```
   * Current Menubar app version: ```v1.4.1```
   * If you want to see the changes that happen to the code, please head into the Change log with [This link](https://github.com/hackintosh-user/hack-touchid/blob/main/CHANGELOG.md)
   * Please refrence the Table that has the Supported sensors to make sure you can use this tool. [This link should take you there](https://github.com/hackintosh-user/hack-touchid/tree/main#supported-sensors)
@@ -39,11 +39,12 @@ into the prompt automatically.
 This Table will have the currently Supported Sensors or sensors in **Development** or **Planned Support**. Please keep your expectations in check, this is a hobby project.
 | Sensor Name / Model    | VID  | PID  | Support status                                                                | Supported Features               |
 |------------------------|------|------|-------------------------------------------------------------------------------|----------------------------------|
-| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (Thanks Hackintosh-user)**    | **Fully Supported**              | 
-| Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt)**             | **Fully Supported**              |
-| Prometheus 97          | 138A | 0097 | **Developing & actively testing (Thanks u/p0cketl1nt)**                       | **Unfinshed**                    | 
-| Prometheus 9d          | 138A | 009d | **Developing / Supposed to work according to python-validity**                | **according to python-validity** |
-| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing**                                             | **Unfinshed**                    | 
+| Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (Thanks Hackintosh-user!)**   | **Fully Supported.**             | 
+| Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt!)**            | **Fully Supported.**             |
+| Prometheus 97          | 138A | 0097 | **Supported & Confirmed working on a X1C5 (Thanks u/p0cketl1nt!)**            | **Fully Supported.**             |
+| Prometheus 9d          | 138A | 009d | **Supported & but needs testing**                                             | **Needs testing.**               |
+| UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing (thanks u/Cold_Salamander7764!)**             | **Features in development**.     |  
+| Synaptics VFS7552      | 138A | 0092 | **Developing & actively Testing (thanks priyashgawande-commits!)**            | **Features in development**.     | 
 
  * Please Keep in Mind that some sensor names are **too long to fit in the table** the VID:PID for each currently or planned sensor will be in the table and regardless the client itself checks if your sensor is supported.
  * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesn't work.
@@ -148,13 +149,15 @@ Known limitations:
 
 ## Requirements
 - **macOS 14 Sonoma and later** (older versions may work, but I offer **0 support for them**)
-- **macOS 15 Sequoia and later is the recommended version for Hackintosh Touch-ID** 
+- **macOS 15 Sequoia and later is the recommended version for Hackintosh Touch-ID**
+- **macOS 26 Tahoe** for "swipe/touch to lock" 
 - Xcode Command Line Tools (`xcode-select --install`)
-- [Homebrew](https://brew.sh)
+- [Homebrew](https://brew.sh) or [MacPorts](https://www.macports.org) (the build scripts and the client look in both; with MacPorts the packages below are `libusb`, `openssl3`, `innoextract` and `7zip`, installed with `sudo port install`)
 - Dependencies depend on your sensor. `prep_and_build.sh` installs only what yours needs (run `./prep_and_build.sh --list` to see it):
   - `libusb` (`brew install libusb`), every sensor
-  - `openssl@3` (`brew install openssl@3`), Metallica MIS only [will be Deprecated on Novemeber 1st 2026 but should work fine still]
-  - `innoextract` (`brew install innoextract`), Metallica MIS only
+  - `openssl@3` (`brew install openssl@3`), Metallica MIS and Prometheus 97 only [will be Deprecated on Novemeber 1st 2026 but should work fine still]
+  - `innoextract` (`brew install innoextract`), Metallica MIS and Prometheus 97 only
+  - `sevenzip` (`brew install sevenzip`), Synaptics VFS7552 only
 - Accessibility permission granted to the daemon (handled automatically
   by the deploy script, see below)
 - ```OpenCore v1.0.6 or later``` (For maximum Security | Release or Debug are fine) but on older versions of OpenCore will work but I don't support it. You are on your own if you use v1.0.5 or older.
@@ -233,9 +236,9 @@ Actions
 [2] Verify Fingerprint Match [Score / x ]
 [3] Deploy Authentication Services
 [C] View Fingerprint (capture preview, nothing saved)
-[P] (ONLY FOR METALLICA MIS SENSORS) Pair
+[P] (ONLY FOR METALLICA MIS & PROMETHEUS 97 SENSORS) Pair
 [U] (ONLY FOR UPEK 147e:2016) capture .pgm
-[B] Capture (experimental, Only for Metallica MIS Sensors)
+[B] Capture (experimental, Only for Metallica MIS & Prometheus 97 Sensors)
 [FP] Fpbootd, Pre-Login Auth (coming soon)
 
 Utilities
@@ -281,8 +284,8 @@ password automatically.
 * ```--debug-full```: Same as `--debug`, but never truncates large payloads.
 * ```--list-records```: Read-only. Lists the storage, users and enrolled fingers stored on the sensor, plus database size and free space.
 * ```--wipe-records```: Deletes all enrolled prints stored on the sensor. Destructive, cannot be undone.
-* ```--enroll-test```: Metallica MIS only. Calibrates, enrolls one finger on the sensor and exits. Tester tool, run it together with `--debug`.
-* ```--verify-test```: Metallica MIS only. Calibrates, asks for one touch, matches it against the print saved by `--enroll-test` and exits. Run it together with `--debug`.
+* ```--enroll-test```: Metallica MIS and Prometheus 97 only. Calibrates, enrolls one finger on the sensor and exits. Tester tool, run it together with `--debug`.
+* ```--verify-test```: Metallica MIS and Prometheus 97 only. Calibrates, asks for one touch, matches it against the print saved by `--enroll-test` and exits. Run it together with `--debug`.
 * ```--force-pair```: Experimental. Tries to pair the sensor by writing its identity partitions. A sensor that is already paired refuses this (error `0x0404`), so use the two host flags below instead.
 * ```--host-product "<name>"```: Overrides the product name HTID uses to derive the pairing key. Use the laptop's real value, not the spoofed Mac one. Use together with `--host-serial`. Applies to this run only, nothing is saved.
 * ```--host-serial "<serial>"```: Overrides the serial HTID uses to derive the pairing key. Use the laptop's real value. Use together with `--host-product`. Applies to this run only, nothing is saved. 
@@ -290,9 +293,9 @@ password automatically.
 * ```--pane```: Opens the installed preference pane instead of the CLI client.
 * ```--list-fingers```: Prints the enrolled prints as JSON and exits. Used by the Settings pane.
 * ```--rename-finger```: Used with `--finger-id <ID> --finger-name "<name>"`. Renames a print and exits.
-* ```--delete-finger```: Used with `--finger-id <ID>`. Removes a print and exits. Not available on Metallica MIS.
-* ```--mmis-connect```: Metallica MIS only. Opens a session with the sensor and reports the result. Used by the Settings pane.
-* ```--mmis-calibrate```: Metallica MIS only. Runs the calibration and reports the result. Used by the Settings pane.
+* ```--delete-finger```: Used with `--finger-id <ID>`. Removes a print and exits. Not available on Metallica MIS or Prometheus 97.
+* ```--mmis-connect```: Metallica MIS and Prometheus 97 only. Opens a session with the sensor and reports the result. Used by the Settings pane.
+* ```--mmis-calibrate```: Metallica MIS and Prometheus 97 only. Runs the calibration and reports the result. Used by the Settings pane.
 * ```--fpbootd-daemon```: Runs the client as the Fpbootd pre-login socket server. Started by the Fpbootd install, you should not need to run it yourself.
 
 ## How it works
@@ -368,10 +371,11 @@ driver exists.
 
 ## Credits
 
-* @Hackintosh-user: Main Lead developer
-* @ilikehackintosh: Documentation handler
-* [u/p0cketl1nt](https://www.reddit.com/user/p0cketl1nt/): Main tester for Metallica MIS 06cb:009a & Prometheus 97 138a:0097 (massive thank you!)
-* [u/dCold_Salamander7764](https://www.reddit.com/user/Cold_Salamander7764/): Main tester for UPEK touch-Strip 147e:2016 (massive thank you!)
+* [@Hackintosh-user](https://github.com/hackintosh-user): Main Lead developer
+* [@ilikehackintosh](https://github.com/ilikehackintosh): Documentation handler
+* [u/p0cketl1nt](https://www.reddit.com/user/p0cketl1nt/): Main tester for Metallica MIS 06cb:009a & Prometheus 97 138a:0097 (Massive thank you!)
+* [u/dCold_Salamander7764](https://www.reddit.com/user/Cold_Salamander7764/): Main tester for UPEK touch-Strip 147e:2016 (Massive thank you!)
+* [@priyashgawande-commits](https://github.com/priyashgawande-commits)L Main tester for Synaptics VFS7552 (Massive thank you!)
 
 ## License
 

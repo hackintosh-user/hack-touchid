@@ -47,11 +47,12 @@ ht_ensure_tool
 FAMILIES="$("$HT_TOOL" resolve "$SENSORS" | paste -sd, -)" || exit 1
 echo "Client build for sensor family: $FAMILIES"
 
-# Every family needs libusb; only metallica adds OpenSSL.
+# Every family needs libusb; only metallica adds OpenSSL (vfs7552 needs 7-Zip
+# only at run time, for its firmware).
 MISSING="$("$HT_TOOL" deps build "$FAMILIES" | ht_filter_missing | paste -sd' ' -)"
 if [ -n "$MISSING" ]; then
     echo "error: missing build dependencies for this sensor: $MISSING" >&2
-    echo "       install with: brew install $MISSING" >&2
+    echo "       install with: $(ht_install_hint $MISSING)" >&2
     echo "       or run ./prep_and_build.sh --sensor $FAMILIES to be offered the install." >&2
     exit 1
 fi
@@ -72,6 +73,16 @@ case ",$FAMILIES," in
     *)
         SENSOR_SRC="metallica/ht_sensor_stubs.c"
         CFLAGS="-DHT_NO_METALLICA $CFLAGS"
+        ;;
+esac
+
+# VFS7552 (138a:0092): libusb-only probe and the HP firmware fetch. Only
+# compiled in when that family is part of the build; every other build
+# leaves these out and the client's flags print a "rebuild with" hint.
+case ",$FAMILIES," in
+    *,vfs7552,*)
+        SENSOR_SRC="$SENSOR_SRC vfs7552/vfs7552_probe.c vfs7552/vfs7552_firmware.c"
+        CFLAGS="-DHT_WITH_VFS7552 $CFLAGS"
         ;;
 esac
 

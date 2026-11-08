@@ -256,17 +256,28 @@ static int capture_mode(metallica_mis_tls_t *tls, enroll_ctx_t *ctx, mmis_captur
         fflush(stdout);
     }
 
-    /* wait for the finger: interrupt type 2 (anything else is skipped, as upstream) */
+    /* wait for the finger: interrupt type 2 (anything else is skipped, as upstream).
+     * A 138a:0097 was seen to drop the type 2 event once in a 10 touch enroll
+     * (Nov 7 log): the progress events 03 40 01 / 03 41 03 / 03 43 04 still came,
+     * but waiting only for type 2 sat out the whole 30 s timeout and the sensor
+     * light stayed off. So a type 3 "capture complete" event (bit 2 of byte 2)
+     * counts as the finger having been seen AND the capture being done. */
+    bool capture_done = false;
     for (;;) {
         w = wait_finger_interrupt(intr, sizeof(intr), WAIT_FINGER_MS);
         if (w == MMIS_WAIT_ABORTED) { rc = MMIS_WAIT_ABORTED; goto done; }
         if (w == 0) { rc = -2; goto done; }
         if (w < 0) goto done;
         if (intr[0] == 2) break;
+        if (intr[0] == 3 && w >= 3 && (intr[2] & 4)) {
+            mmis_dbg("capture: finger-down interrupt (type 2) was missed, capture complete seen anyway");
+            capture_done = true;
+            break;
+        }
     }
 
     /* wait for capture complete: type 3 with bit 2 set in byte 2 */
-    for (;;) {
+    while (!capture_done) {
         w = metallica_mis_wait_interrupt(intr, sizeof(intr), WAIT_DONE_MS);
         if (w <= 0) {
             fprintf(stderr, "metallica_mis_enroll: capture: finger seen but the capture never completed (%s)\n",
