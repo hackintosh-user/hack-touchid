@@ -214,7 +214,7 @@ Run the client with this command:
 sudo ./hack-touchid
 ```
 
-* Upon running this you will be presented with the Verbose launch, which you can skip via:
+* Upon running this the client runs its startup checks, then clears the screen and draws the menu (if a check prints a warning or an error, the screen is left alone so you can read it). For the plain startup, with the banner first and no clearing, use:
   ```bash
   sudo ./hack-touchid --q
   ```
@@ -274,8 +274,8 @@ password automatically.
 
 * ```-h```, ```--help```: Shows the list of launch arguments and exits. Needs no password. The same list is shown by `[H]` in the menu.
 * ```-v```, ```--version```: Shows the client version, build, branch and the installed daemon, FPOV and Fpbootd versions, then exits. Needs no password.
-* ```--q```: launches the Client without presenting the Verbose boot / launch
-* ```--quiet```: same like the one before, launches the client without presenting the Verbose logs.
+* ```--q```: plain startup: banner first, the startup checks stay on screen and the screen is not cleared afterwards
+* ```--quiet```: same as ```--q```.
 * ```--deploy-agent```: Runs the [3] Deploy authentication services without entering the client. This is also used when the Menubar detects the Daemon isn't installed / after a macOS update
 * ```--diag-pid```: Runs the [D] Diagnostic steps but without launching the client.
 * ```--check-updates```: checks for updates without launching the client. If there is one, shows the [A] Show changelog / [Y] Download and install / [N] Cancel prompt.
