@@ -46,7 +46,7 @@ Utilities
 <li><b>Enroll a finger [1].</b> Captures several swipes and stores them as a named template on the encrypted volume. Repeat for as many fingers as you like. Verification uses best match wins.</li>
 <li><b>Verify [2].</b> A standalone test of capture and matching, independent of the daemon. Use it to confirm everything works before deploying.</li>
 <li><b>Deploy [3].</b> Rebuilds the daemon, installs it as a per-user LaunchAgent, re-signs it, regenerates its Accessibility grant, and installs a narrowly scoped sudoers rule so it can reach the USB device. Re-run on every deploy so the daemon is never stale.</li></ol>
-<p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for a swipe and, on a match, types the stored password.</p></section>
+<p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for your fingerprint and, on a match, types the stored password.</p></section>
 <section id="args"><h2>Launch arguments</h2><div class="scroll"><table>
 <thead><tr><th>Argument</th><th>What it does</th></tr></thead><tbody>
 <tr><td><code>--q</code> / <code>--quiet</code></td><td>Launch without the verbose boot output.</td></tr>
@@ -84,9 +84,9 @@ open "build/Hackintosh Touch-ID.app"</code></pre>
 <ul><li>First launch is blocked by Gatekeeper because the app is ad-hoc signed. Right-click, Open, Open again, or run <code>xattr -cr "Hackintosh Touch-ID.app"</code>.</li>
 <li>The daemon needs a small patch to send events to the app. See the <a href="https://github.com/hackintosh-user/hack-touchid/blob/main/Hackintosh-TouchID-Menubar/daemon-patch/README.md">daemon patch README</a>.</li>
 <li>While a prompt (padlock, Passwords, Keychain Access) needs your finger, a card appears at the top middle of the screen, above all apps. It needs no notification permission. Run <code>HackintoshTouchID --overlay-demo</code> to preview every card.</li>
-<li>macOS draws the lock screen above every app window, so on the lock screen the app uses a Notification Center banner instead. For readable banners, set System Settings, Notifications, Show Previews to <b>Always</b>.</li>
+<li>The card also shows on the lock screen. The app moves it into a private SkyLight space above the login window, using the technique of the MIT licensed SkyLightWindow package. To turn the lock screen card off, run <code>defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool NO</code>. If the SkyLight symbols are missing, the app falls back to Notification Center banners; for readable banners, set System Settings, Notifications, Show Previews to <b>Always</b>.</li>
 <li>Pause and resume is global, it affects every recognized prompt at once.</li>
-<li>Lock screen banners are cleared from Notification Center automatically after each attempt, so they do not pile up.</li></ul>
+<li>If the card is blocked or missing, the Notification Center banners fallback is cleared automatically after each attempt, so they do not pile up.</li></ul>
 <h3>Swipe to Lock (macOS Tahoe only)</h3>
 <p class="note"><b>macOS 26 Tahoe only</b>, and VFS5011 sensors only. The menu item does not appear on earlier macOS versions, and the daemon ignores the setting there.</p>
 <ul><li>Choose <b>Enable Swipe to Lock</b> in the menu bar app. The sensor lights up, and one swipe locks the screen (Ctrl+Cmd+Q). Choose <b>Disable Swipe to Lock</b> to turn it off.</li>
