@@ -221,6 +221,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private var authEpisodeStartedLocked = false
     // "Cancelled" waits a moment so a success that follows an unlock can cancel it.
     private var pendingCancel: DispatchWorkItem?
+    // The daemon can re-arm for a moment right after a success (the unlock itself looks like a new
+    // prompt). Anything that starts within this window after a result is not shown.
+    private var lastAuthEnd: Date?
+    private var suppressedEpisode = false
+    private let rearmGraceSeconds: TimeInterval = 4.0
     private var clientUpdateTimer: Timer?
     private var aboutWindow: NSWindow?
     private var scanningEnabled: Bool = true {
@@ -258,7 +263,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
         ) { [weak self] _ in
-            if !AuthOverlay.lockScreenExperiment { self?.authOverlay.hide() }
+            if !AuthOverlay.cardWorksOnLockScreen { self?.authOverlay.hide() }
         }
 
         // Preview for design checks: `HackintoshTouchID --overlay-demo` cycles every card.
@@ -959,12 +964,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             authOverlay.show(kind, thenWaiting: thenWaiting)
             return
         }
-        if AuthOverlay.lockScreenExperiment {
-            // Experiment: also try the card over the lock screen. The banner below stays as the safety net.
+        if AuthOverlay.cardWorksOnLockScreen {
+            // The card shows above the lock screen through SkyLight, so no banner is needed.
             authOverlay.show(kind, thenWaiting: thenWaiting)
-        } else {
-            authOverlay.hide()
+            return
         }
+        authOverlay.hide()
         let body: String
         switch kind {
         case .waiting:       body = "Waiting for fingerprint 🔻"
@@ -988,28 +993,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             switch name {
             case VFS5011Notification.swipeRequested:
                 self.pendingCancel?.cancel()
+                if let t = self.lastAuthEnd, Date().timeIntervalSince(t) < self.rearmGraceSeconds {
+                    self.suppressedEpisode = true // a re-arm right after a success: stay quiet
+                    return
+                }
+                self.suppressedEpisode = false
                 self.authEpisodeOpen = true
                 self.authEpisodeStartedLocked = self.isScreenLocked()
                 self.showAuth(.waiting)
 
             case VFS5011Notification.swipeSuccess:
                 self.pendingCancel?.cancel()
+                self.suppressedEpisode = false
+                self.lastAuthEnd = Date()
                 self.authEpisodeOpen = false
                 self.showAuth(.success)
 
             case VFS5011Notification.swipeFailed:
+                if self.suppressedEpisode { return }
                 self.showAuth(.notRecognized, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeWeak:
+                if self.suppressedEpisode { return }
                 self.showAuth(.incomplete, thenWaiting: self.authEpisodeOpen)
 
             case VFS5011Notification.swipeLockout:
                 self.pendingCancel?.cancel()
+                self.suppressedEpisode = false
+                self.lastAuthEnd = Date()
                 self.authEpisodeOpen = false
                 self.showAuth(.lockout)
 
             case VFS5011Notification.swipeCancelled:
                 self.pendingCancel?.cancel()
+                if self.suppressedEpisode { self.suppressedEpisode = false; return }
                 let startedLocked = self.authEpisodeStartedLocked
                 self.authEpisodeOpen = false
                 if startedLocked {
@@ -1238,9 +1255,14 @@ final class AuthOverlay {
     // EXPERIMENT: try to draw the card above the lock screen. Off by default; turn on with
     //   defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool YES
     // then quit and relaunch the menu bar app. macOS may still hide it there.
+    // On by default. Turn off with: defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool NO
     static var lockScreenExperiment: Bool {
-        UserDefaults.standard.bool(forKey: "OverlayOnLockScreen")
+        (UserDefaults.standard.object(forKey: "OverlayOnLockScreen") as? Bool) ?? true
     }
+    // The card can only show on the lock screen if the SkyLight calls are available.
+    static var cardWorksOnLockScreen: Bool { lockScreenExperiment && SkyLightSpace.shared != nil }
+    // Diagnostics log only when explicitly set to YES.
+    static var overlayDebugLog: Bool { UserDefaults.standard.bool(forKey: "OverlayOnLockScreen") }
 
     private func makePanel() -> NSPanel {
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 50),
@@ -1313,7 +1335,7 @@ final class AuthOverlay {
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: kind.subtitle ?? kind.title])
 
-        if AuthOverlay.lockScreenExperiment { scheduleLockDiagnostics(for: panel, kind: kind) }
+        if AuthOverlay.overlayDebugLog { scheduleLockDiagnostics(for: panel, kind: kind) }
 
         let life = kind.lifetime ?? waitingSafetySeconds
         let work = DispatchWorkItem { [weak self] in
