@@ -42,7 +42,7 @@ This Table will have the currently Supported Sensors or sensors in **Development
 | Validity VFS5011       | 138A | 0018 | **Supported & Confirmed working on a DV6-7070ex (Thanks Hackintosh-user!)**   | **Fully Supported.**             | 
 | Synaptics Metallica MIS| 06cb | 009a | **Supported & Confirmed working on a X1C6 (Thanks u/p0cketl1nt!)**            | **Fully Supported.**             |
 | Prometheus 97          | 138A | 0097 | **Supported & Confirmed working on a X1C5 (Thanks u/p0cketl1nt!)**            | **Fully Supported.**             |
-| Prometheus 9d          | 138A | 009d | **Supposed to work according to python-validity | Testing needed**            | **according to python-validity** |
+| Prometheus 9d          | 138A | 009d | **Supported & but needs testing**                                             | **Needs testing.**               |
 | UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing (thanks u/Cold_Salamander7764!)**             | **Features in development**.     |  
 | Synaptics VFS7552      | 138A | 0092 | **Developing & actively Testing (thanks priyashgawande-commits!)**            | **Features in development**.     | 
 
