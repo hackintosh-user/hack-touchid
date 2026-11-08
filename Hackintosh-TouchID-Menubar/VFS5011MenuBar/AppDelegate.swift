@@ -257,7 +257,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         // The lock screen covers any window, so drop the card as soon as the screen locks.
         DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main
-        ) { [weak self] _ in self?.authOverlay.hide() }
+        ) { [weak self] _ in
+            if !AuthOverlay.lockScreenExperiment { self?.authOverlay.hide() }
+        }
 
         // Preview for design checks: `HackintoshTouchID --overlay-demo` cycles every card.
         if CommandLine.arguments.contains("--overlay-demo") {
@@ -952,18 +954,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // Unlocked: the overlay card. Locked: a Notification Center banner, because no app window can
     // be drawn above the lock screen.
     private func showAuth(_ kind: AuthOverlayKind, thenWaiting: Bool = false) {
-        if !isScreenLocked() {
+        let locked = isScreenLocked()
+        if !locked {
             authOverlay.show(kind, thenWaiting: thenWaiting)
             return
         }
-        authOverlay.hide()
+        if AuthOverlay.lockScreenExperiment {
+            // Experiment: also try the card over the lock screen. The banner below stays as the safety net.
+            authOverlay.show(kind, thenWaiting: thenWaiting)
+        } else {
+            authOverlay.hide()
+        }
         let body: String
         switch kind {
-        case .waiting:       body = "Swipe to authenticate! 🔻"
-        case .success:       body = "Authentication successful! ✅"
-        case .notRecognized: body = "Authentication failed, try swiping better ❌"
-        case .incomplete:    body = "Swipe was too weak, please try again 🔻"
-        case .lockout:       body = "Authentication failed, use your password ❌"
+        case .waiting:       body = "Waiting for fingerprint 🔻"
+        case .success:       body = "Authenticated ✅"
+        case .notRecognized: body = "Not recognized, please try again ❌"
+        case .incomplete:    body = "Incomplete swipe, please try again 🔻"
+        case .lockout:       body = "Too many attempts, use your password ❌"
         case .cancelled:     return
         }
         clearSwipeNotifications(after: 0) { [weak self] in
@@ -1184,6 +1192,13 @@ final class AuthOverlay {
     private var hideWork: DispatchWorkItem?
     private let waitingSafetySeconds: TimeInterval = 90 // never leave a stale Waiting card up
 
+    // EXPERIMENT: try to draw the card above the lock screen. Off by default; turn on with
+    //   defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool YES
+    // then quit and relaunch the menu bar app. macOS may still hide it there.
+    static var lockScreenExperiment: Bool {
+        UserDefaults.standard.bool(forKey: "OverlayOnLockScreen")
+    }
+
     private func makePanel() -> NSPanel {
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 260, height: 50),
                         styleMask: [.borderless, .nonactivatingPanel],
@@ -1194,10 +1209,20 @@ final class AuthOverlay {
         p.isFloatingPanel = true
         p.hidesOnDeactivate = false
         p.becomesKeyOnlyIfNeeded = true
-        p.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
-        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        applyLevel(to: p)
         p.isReleasedWhenClosed = false
         return p
+    }
+
+    private func applyLevel(to p: NSPanel) {
+        if AuthOverlay.lockScreenExperiment {
+            // One step above the shielding window the lock screen and screen saver use.
+            p.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()) + 1)
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .fullScreenDisallowsTiling, .ignoresCycle]
+        } else {
+            p.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        }
     }
 
     // Shows a card. thenWaiting: after a timed card (a failed or weak attempt) go back to Waiting,
@@ -1221,6 +1246,7 @@ final class AuthOverlay {
         card.frame = NSRect(origin: .zero, size: size)
         panel.contentView = card
         panel.ignoresMouseEvents = (kind != .cancelled) // only the Cancelled card has a button
+        applyLevel(to: panel) // follows the experiment flag without a relaunch of the panel
 
         // Top middle of the screen that has the menu bar, just under it.
         let screen = NSScreen.screens.first ?? NSScreen.main
