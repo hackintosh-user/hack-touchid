@@ -143,8 +143,10 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
          * already handles this identity (see its
          * METALLICA_MIS_IDENTITIES table); nothing sensor-specific to
          * build here, same backend_available gate as 09a above.
-         * p0cketl1nt's spare ThinkPad X1C5 has this exact identity
-         * (confirmed via lsusb), untested against real hardware yet. */
+         * p0cketl1nt's ThinkPad X1C5 has this exact identity (confirmed
+         * via lsusb). Nov 8 2026: confirmed working on that X1C5 (pair,
+         * calibration, Enroll, Verify, Deploy, lock screen and padlock
+         * unlock), so this row is now 1. */
         .family              = "metallica",
         .deps_build          = HT_DEP_LIBUSB | HT_DEP_OPENSSL,
         .deps_runtime        = HT_DEP_LIBUSB | HT_DEP_OPENSSL | HT_DEP_INNOEXTRACT,
@@ -153,7 +155,7 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
         .pid                  = 0x0097,
         .daemon_binary_name   = "metallica_mis_agent",
         .install_script_name  = "metallica/metallica_mis_agent_install.sh",
-        .backend_available    = 0,
+        .backend_available    = 1,
     },
     {
         /* Same reasoning as the 138a:0097 entry above -- blobs_9d.py is
