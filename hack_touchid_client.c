@@ -1419,6 +1419,12 @@ static int prompt_and_store_password(const char *mount_path, int only_if_missing
  * as a side effect since they already have the volume mounted anyway.
  * -1 = not checked yet this session. */
 static int g_finger_count = -1;
+
+/* Metallica MIS keeps its prints on the sensor, so g_finger_count (the template volume) never applies.
+ * These remember what this run learned: a good enroll or match proves at least one print exists, and
+ * listing the sensor's prints gives the exact number (-1 = not listed yet). */
+static bool g_mmis_prints_present = false;
+static int g_mmis_prints_listed = -1;
 static char g_finger_labels[MAX_ENROLLED_FINGERS][MAX_FINGER_LABEL + 1];
 
 /* Trims whitespace/newline off a raw line of input and rejects
@@ -1944,7 +1950,19 @@ static void print_menu(void) {
     /* Not a live check — see g_finger_count comment above. The
      * templates volume is unmounted at rest; run Enroll, Verify, or
      * Manage once this session to populate this. */
-    if (g_finger_count < 0) {
+    if (g_detected_sensor && is_metallica_mis_sensor(g_detected_sensor)) {
+        if (g_mmis_prints_listed == 0) {
+            printf("  * Fingers              : %sNone on the sensor%s\n", VFSC_YELLOW, VFSC_RESET);
+        } else if (g_mmis_prints_listed > 0) {
+            printf("  * Fingers              : %s%d on the sensor%s\n", VFSC_GREEN, g_mmis_prints_listed, VFSC_RESET);
+        } else if (g_mmis_prints_present) {
+            printf("  * Fingers              : %sOn the sensor%s%s (confirmed this session)%s\n",
+                   VFSC_GREEN, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+        } else {
+            printf("  * Fingers              : %sStored on the sensor%s%s (run Verify to check)%s\n",
+                   VFSC_DIM, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+        }
+    } else if (g_finger_count < 0) {
         printf("  * Fingers              : %sUnknown (run Verify/Enroll to check)%s\n", VFSC_DIM, VFSC_RESET);
     } else if (g_finger_count == 0) {
         printf("  * Fingers              : %sNone enrolled%s\n", VFSC_YELLOW, VFSC_RESET);
@@ -3323,6 +3341,7 @@ static void do_verify_metallica(void) {
     int rc = mmis_run_with_host_identity(mmis_verify_action);
     g_mmis_stderr_to_log = false;
     if (rc == 0) {
+        g_mmis_prints_present = true;
         const char *name = NULL;
         int st = metallica_mis_last_match_subtype();
         if (st >= 0) {
@@ -3382,6 +3401,8 @@ static void do_enroll_metallica(void) {
         vfsc_err("\nEnrollment didn't finish. Details are in %s\n"
                   "(or run with --debug to see everything on screen).\n\n", MMIS_ENROLL_LOG_PATH);
     } else {
+        g_mmis_prints_present = true;
+        g_mmis_prints_listed = -1; /* the count just changed, so any earlier listing is stale */
         if (g_mmis_alias_mode && g_mmis_new_name[0]) vfsc_ok("\nDone. \"%s\" is enrolled on the sensor.\n\n", g_mmis_new_name);
         else vfsc_ok("\nDone. Your finger is enrolled on the sensor.\n\n");
     }
@@ -3393,7 +3414,9 @@ static uint16_t g_mmis_list_subs[64];
 static int g_mmis_list_n = 0;
 static int mmis_list_action(void) {
     g_mmis_list_n = 0;
-    return metallica_mis_list_prints(g_mmis_list_subs, 64, &g_mmis_list_n);
+    int lrc = metallica_mis_list_prints(g_mmis_list_subs, 64, &g_mmis_list_n);
+    if (lrc == 0) g_mmis_prints_listed = g_mmis_list_n;
+    return lrc;
 }
 
 static void do_rename_metallica(void) {
@@ -7333,6 +7356,13 @@ static void run_menu_updater_mode(void) {
         printf("%sUpdate was successfully deployed & installed! :)%s\n", VFSC_YELLOW, VFSC_RESET);
     } else {
         printf("Update installed. Run sudo hack-touchid and press [3] to redeploy the daemon.\n");
+    }
+    /* The pane that started this update is still the old build. Refresh the installed copy now, so a
+     * second trip through the client is not needed to see the new pane. */
+    char ipath[PATH_MAX];
+    struct passwd *ipw = NULL;
+    if (installed_pane_path(ipath, sizeof(ipath), &ipw)) {
+        (void)do_install_pane();
     }
     printf("Update was complete, please run sudo hack-touchid to launch the client.\n\n");
 }
