@@ -15,13 +15,13 @@
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1.0</string>
+	<string>2.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>1.1.0</string>
+	<string>2.0.0</string>
 	<key>HTIDPaneBuildDate</key>
-	<string>2026-11-08</string>
+	<string>2026-11-09</string>
 	<key>HTIDPaneSourceHash</key>
-	<string>e882d8d331f7d178</string>
+	<string>25906a36e4bc2caa</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSHumanReadableCopyright</key>
