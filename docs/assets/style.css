@@ -111,3 +111,11 @@ a.frow:hover .ft b{color:var(--accent)}
 84%{color:#bf5af2}
 }
 @media (prefers-reduced-motion:reduce){.fi{animation:none;color:var(--accent)}}
+details.sensor{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:12px 0;padding:0 16px}
+details.sensor[open]{padding-bottom:6px}
+details.sensor summary{cursor:pointer;padding:14px 0;list-style:none}
+details.sensor summary::-webkit-details-marker{display:none}
+details.sensor summary::before{content:"\25B8";display:inline-block;margin-right:8px;color:var(--muted);transition:transform .15s}
+details.sensor[open] summary::before{transform:rotate(90deg)}
+details.sensor .lead{color:var(--muted);margin:0 0 14px}
+details.sensor .steps>li:last-child{padding-bottom:6px}
