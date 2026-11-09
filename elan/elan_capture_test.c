@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
     if (probe) { elan_capture_close(d); return 0; }
     puts("Keep the pad clear initially, then touch and release it. Do not press the power button.");
     if (output) puts("The final frame will be saved. It may contain biometric data; do not attach it to a public issue.");
-    uint16_t frame[ELAN_PIXELS]; unsigned completed = 0;
+    uint16_t frame[ELAN_PIXELS] = {0}; unsigned completed = 0;
     struct timespec pause = {0, 60000000};
     while (completed < frames && !stopped) {
         rc = elan_capture_frame(d, frame, ELAN_PIXELS, 2000);
@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
         nanosleep(&pause, NULL);
     }
     elan_capture_close(d);
-    if (!rc && !stopped && output && save_pgm(output, frame) != 0) {
+    if (!rc && !stopped && completed == frames && output && save_pgm(output, frame) != 0) {
         perror("Could not create output (existing files are not overwritten)"); rc = -1;
     }
     printf("Captured %u/%u frames%s.\n", completed, frames, stopped ? " (cancelled)" : "");
