@@ -21,9 +21,9 @@ name: CI
 
 on:
   push:
-    branches: [main, active-development]
+    branches: [main, active-development, elan-0c6e]
   pull_request:
-    branches: [main, active-development]
+    branches: [main, active-development, elan-0c6e]
   workflow_dispatch:
 
 jobs:
