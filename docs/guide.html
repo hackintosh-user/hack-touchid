@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="assets/style.css"></head><body>
 <nav><div class="wrap"><a class="brand" href="index.html"><span class="fp"></span>HTID</a><a href="index.html">Home</a><a href="docs.html">Documentation</a><a href="guide.html" class=on>Guide</a><a href="security.html">Security</a><a href="contribute.html">Help grow this!</a><a href="https://github.com/hackintosh-user/hack-touchid">GitHub</a></div></nav>
 <header class="wrap page-head"><h1>Guide</h1><p>Everything you need to build, run and use HTID.</p></header><main class="wrap">
-<div class="toc"><a href="#requirements">Requirements</a><a href="#build">Build</a><a href="#run">Run the client</a><a href="#menu">The menu</a><a href="#args">Launch arguments</a><a href="#menubar">Menu bar app</a><a href="#fpbootd">Fpbootd</a><a href="#how">How it works</a><a href="#limits">Limitations</a></div>
+<div class="toc"><a href="#requirements">Requirements</a><a href="#build">Build</a><a href="#run">Run the client</a><a href="#menu">The menu</a><a href="#sensors">Sensor guides</a><a href="#args">Launch arguments</a><a href="#menubar">Menu bar app</a><a href="#fpbootd">Fpbootd</a><a href="#how">How it works</a><a href="#limits">Limitations</a></div>
 <section id="requirements"><h2>Requirements</h2><ul>
 <li><b>macOS 14 Sonoma or later</b> (macOS 15 Sequoia or later recommended). Older versions get zero support.</li>
 <li><b>OpenCore v1.0.6 or later</b>. v1.0.5 and older are not supported.</li>
@@ -47,6 +47,45 @@ Utilities
 <li><b>Verify [2].</b> A standalone test of capture and matching, independent of the daemon. Use it to confirm everything works before deploying.</li>
 <li><b>Deploy [3].</b> Rebuilds the daemon, installs it as a per-user LaunchAgent, re-signs it, regenerates its Accessibility grant, and installs a narrowly scoped sudoers rule so it can reach the USB device. Re-run on every deploy so the daemon is never stale.</li></ol>
 <p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for your fingerprint and, on a match, types the stored password.</p></section>
+<section id="sensors"><h2>Sensor guides</h2>
+<p>Pick your sensor, open its guide and follow it from top to bottom. You can find your sensor's VID:PID in System Information, USB. Steps marked <b>(automatic)</b> happen on their own; they are listed so you know what the client is doing. Every guide ends the same way: deploy the daemon, then optionally install the menu bar app and the Settings pane.</p>
+
+<details class="sensor" id="sensor-vfs5011"><summary><b>Validity VFS5011</b> <code>138a:0018</code> <span class="tag ok">Working</span></summary>
+<p class="lead">A swipe sensor. The client captures swipes and matches them on the Mac with NBIS, and your templates live on an encrypted volume.</p>
+<ol class="steps">
+<li><b>Build and start.</b> Run <code>./prep_and_build.sh</code>, then <code>sudo hack-touchid</code>. The banner should name your sensor. If no sensor is found, make sure it is enabled in your USBMap and visible in System Information, USB.</li>
+<li><b>Check the sensor with [C].</b> View Fingerprint shows a live capture preview and saves nothing. Swipe at a steady speed. If the image is faint, clean the sensor and your finger.</li>
+<li><b>Enroll with [1].</b> The first time, the client sets up the encrypted template volume and asks for your macOS login password. It has to be your real password, because it is what gets typed when your finger matches. Then name the finger (for example Right Index) and swipe until the bar is full (5 good swipes). Run [1] again for more fingers.</li>
+<li><b>Verify with [2].</b> Swipe once. The client shows your match score against the threshold (default 20). If real swipes score low, enroll again with a slower, steadier swipe, or lower the Match threshold in the Settings pane (lower accepts more swipes).</li>
+<li><b>Deploy with [3].</b> Installs the background daemon, signs it, regenerates its Accessibility permission and adds the scoped sudoers rule for USB access. Run it again after every update.</li>
+<li><b>Test it.</b> Lock the screen with Ctrl+Cmd+Q and swipe at the lock screen, or open a System Settings padlock.</li>
+<li><b>Optional.</b> [M] installs the menu bar app and [I] the Settings pane. On macOS 26 Tahoe the menu bar app also offers Swipe to Lock.</li>
+</ol></details>
+
+<details class="sensor" id="sensor-metallica"><summary><b>Synaptics Metallica MIS and Prometheus</b> <code>06cb:009a</code> <code>138a:0097</code> <span class="tag ok">Working</span></summary>
+<p class="lead">Touch sensors that match on the chip. Your prints are stored on the sensor itself, and nothing about them is saved on the Mac. The sensor has to be paired to this Mac before it works, and the client does that for you.</p>
+<ol class="steps">
+<li><b>Install the dependencies and start.</b> <code>brew install libusb openssl@3 innoextract</code> (MacPorts: <code>libusb openssl3 innoextract 7zip</code>). innoextract unpacks the firmware installer. Build, run <code>sudo hack-touchid</code> and check that the banner shows your sensor.</li>
+<li><b>Start with Enroll [1].</b> Everything below happens inside this one command, so just follow the prompts and choose or name the finger when asked.</li>
+<li><b>Pairing (automatic).</b> A sensor nobody has paired yet gets a one-time setup: HTID writes the sensor's identity partitions and uploads its firmware, which it downloads from Lenovo and unpacks. The sensor restarts, the client waits about 8 seconds and carries on. Pairing swaps the sensor's trusted host identity, so fingerprints enrolled under Windows Hello or another OS on this sensor become unreadable there (they are orphaned, not deleted). [P] Pair runs this step by hand and asks you to type <code>PAIR</code>; you normally do not need it.</li>
+<li><b>Host identity (only if another OS paired the sensor first).</b> The sensor derives its key from the laptop's real product name and serial number, and macOS only sees the spoofed Mac values. The client asks for both once. On Windows, in PowerShell: <code>Get-CimInstance Win32_ComputerSystemProduct | Select Name,IdentifyingNumber</code>. On Linux: <code>cat /sys/class/dmi/id/product_name /sys/class/dmi/id/product_serial</code>. They are saved for root only, so you are asked once. You can also pass them as <code>--host-product</code> and <code>--host-serial</code>.</li>
+<li><b>Secure session, TLS (automatic).</b> The client opens an encrypted session with the sensor using the paired identity. If you see "The sensor rejected the secure connection", wait about 10 seconds and try again. If it keeps happening, attach <code>/var/log/htid-metallica-enroll.log</code> to a GitHub issue.</li>
+<li><b>Calibration (automatic, step 1 of 3).</b> Keep your finger off the sensor until it says so. You can run it again any time from the Sensor tab of the Settings pane (or <code>--mmis-calibrate</code>).</li>
+<li><b>Enroll (steps 2 and 3).</b> Touch the sensor with the same finger when asked. It usually needs about 10 good touches, then it saves the print on the sensor. If the sensor already holds prints, the client asks whether to replace them.</li>
+<li><b>Verify with [2], deploy with [3].</b> Verify with one touch, then Deploy to install the daemon. Run Deploy again after every update. On macOS 26 Tahoe, Touch to Lock is available in the menu bar app.</li>
+</ol>
+<p class="note"><b>Starting over:</b> <code>--wipe-records</code> deletes every print stored on the sensor and cannot be undone. [D] Diagnose creates a report for troubleshooting. The related ID <code>138a:009d</code> is detected, but not working yet.</p></details>
+
+<details class="sensor" id="sensor-upek"><summary><b>UPEK/AuthenTec TouchStrip</b> <code>147e:2016</code> <span class="tag dev">Experimental</span></summary>
+<p class="lead">Capture test only for now. Enroll, Verify and Deploy are not available for this sensor yet.</p>
+<ol class="steps">
+<li><b>Build and start.</b> Run <code>./prep_and_build.sh</code>, then <code>sudo hack-touchid</code>. The banner should name the UPEK TouchStrip.</li>
+<li><b>Capture with [U].</b> Swipe your finger and the client saves a <code>.pgm</code> image.</li>
+<li><b>Help the project.</b> Generate a report with [D] Diagnose and attach it, with your <code>.pgm</code> images, to a GitHub issue. That is what moves this sensor forward.</li>
+</ol></details>
+
+<p class="note"><b>Other sensors.</b> Synaptics VFS7552 (<code>138a:0092</code>) is detected but has no working backend yet. To request a sensor, open a GitHub issue with its VID:PID and a [D] Diagnose report.</p>
+</section>
 <section id="args"><h2>Launch arguments</h2><div class="scroll"><table>
 <thead><tr><th>Argument</th><th>What it does</th></tr></thead><tbody>
 <tr><td><code>--q</code> / <code>--quiet</code></td><td>Plain startup: banner first, the startup checks stay on screen and the screen is not cleared afterwards.</td></tr>
@@ -117,5 +156,9 @@ open "build/Hackintosh Touch-ID.app"</code></pre>
 <li>Ad-hoc code signing only. No notarization or Developer ID.</li>
 <li>Cold boot sign-in is not supported. macOS does not allow this level of access at the login window before a user has logged in. It could take months or years.</li></ul></section>
 </main>
+<script>
+(function(){function o(){var h=location.hash.slice(1);if(!h)return;var e=document.getElementById(h);if(e&&e.tagName==='DETAILS'){e.open=true;e.scrollIntoView();}}
+window.addEventListener('hashchange',o);o();})();
+</script>
 <footer><div class="wrap">HTID, Hackintosh Touch ID. A hobby project, not affiliated with Apple.</div></footer>
 <script src="assets/site.js"></script></body></html>
