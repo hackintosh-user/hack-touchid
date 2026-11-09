@@ -42,7 +42,7 @@
 #define HT_DEP_ALL (HT_DEP_LIBUSB | HT_DEP_OPENSSL | HT_DEP_INNOEXTRACT | HT_DEP_SEVENZIP)
 
 typedef struct {
-    const char *family;            /* build family: "vfs5011", "upek", "metallica" or "vfs7552" */
+    const char *family;            /* build family: "vfs5011", "upek", "metallica", "vfs7552" or "elan" */
     unsigned deps_build;           /* HT_DEP_* bits needed to compile and link this family */
     unsigned deps_runtime;         /* HT_DEP_* bits needed while the client/daemon runs */
     const char *display_name;      /* shown in the client, e.g. "VFS5011" */
@@ -194,6 +194,28 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
         .pid                  = 0x0092,
         .daemon_binary_name   = "vfs7552_daemon",
         .install_script_name  = "vfs7552/vfs7552_agent_install.sh",
+        .backend_available    = 0,
+    },
+    {
+        /* ELAN fingerprint sensor, 04f3:0c6e, a 150x52 image sensor (GitHub
+         * issue #11; reporter s17765152890-gif has an ASUS Vivobook Pro 14X
+         * OLED M7400QC, macOS Sequoia, OpenCore). The reporter's own
+         * standalone app already unlocks with it, using the elanpress
+         * capture protocol and a keypoint matcher (the area is too small
+         * for NBIS minutiae). Nov 2026: being ported as capture test only on
+         * the elan-0c6e branch, with all ELAN code in its own elan/ folder
+         * under LGPL-2.1-or-later (upstream notices kept). Only libusb is
+         * needed. Enroll, Verify and Deploy come in later steps, so
+         * backend_available stays 0, and install_script_name is a
+         * placeholder, until real hardware has confirmed the full flow. */
+        .family              = "elan",
+        .deps_build          = HT_DEP_LIBUSB,
+        .deps_runtime        = HT_DEP_LIBUSB,
+        .display_name        = "ELAN Fingerprint Sensor",
+        .vid                  = 0x04f3,
+        .pid                  = 0x0c6e,
+        .daemon_binary_name   = "elan_daemon",
+        .install_script_name  = "elan/elan_agent_install.sh",
         .backend_available    = 0,
     },
 };
