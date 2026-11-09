@@ -63,7 +63,8 @@ jobs:
             metallica/mmis_factory_bits.c metallica/metallica_mis_debug.c \
             metallica/metallica_mis_db.c metallica/metallica_mis_enroll.c \
             metallica/metallica_mis_agent.c \
-            vfs7552/vfs7552_probe.c vfs7552/vfs7552_firmware.c
+            vfs7552/vfs7552_probe.c vfs7552/vfs7552_firmware.c \
+            elan/elan_capture.c elan/elan_capture_test.c
           # NOTE (Aug 2026): metallica_mis_tls.c/init_flash.c had been sitting in
           # the tree since Aug 19-20 without appearing in this list at all --
           # meaning cppcheck (and the build jobs below, which also don't
@@ -115,11 +116,14 @@ jobs:
       - name: Verify binaries were produced
         run: |
           test -x ./hack-touchid
+          test -x ./elan_capture_test
+          ./elan_capture_test --help
           test -x ./vfs5011_daemon
           test -x ./metallica_mis_daemon
           test -x ./metallica_mis_agent
           ./metallica_mis_agent --version
-          echo "All four binaries built successfully."
+          ./elan/tests/test_client_dispatch.sh
+          echo "Auth binaries and the ELAN capture diagnostic built successfully."
 
   layout-check:
     name: Repository layout (required files and shipped pane)
@@ -222,3 +226,11 @@ jobs:
         with:
           name: Hackintosh-Touch-ID-app
           path: shared/menubar/build
+
+  elan-capture-tests:
+    name: ELAN capture protocol and CLI tests (no sensor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check protocol, cleanup and private output handling
+        run: ./elan/tests/run.sh

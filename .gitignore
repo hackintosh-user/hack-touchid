@@ -20,3 +20,10 @@ ax_probe
 fingers/
 *.keychain
 *.pem
+
+# ELAN capture diagnostics and private optional images
+/elan_capture_test
+/.ht_sensor_tool
+*.pgm
+
+/hack-touchid

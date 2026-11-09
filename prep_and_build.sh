@@ -180,6 +180,13 @@ echo
 echo "== Building client + daemon from source =="
 ./scripts/build.sh --sensor "$FAMILIES"
 
+if [ "$FAMILIES" = "elan" ]; then
+    echo "ELAN is capture-test-only: run ./hack-touchid --capture-elan."
+    echo "No enrollment, verification, deployment or authentication agent is available yet."
+    exit 0
+fi
+
+
 # Preference pane: build only, never install. A failure here must not fail
 # the whole build (the pane is optional), so it is reported and skipped.
 if [ "$BUILD_PANE" = "1" ] && [ "$(uname -s)" = "Darwin" ] && [ -f shared/pane/source/build_prefpane.sh ]; then

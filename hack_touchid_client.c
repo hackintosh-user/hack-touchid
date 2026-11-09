@@ -464,6 +464,11 @@ static int is_upek_sensor(const hack_touchid_sensor_t *s) {
     return s && s->vid == UPEK_VID && s->pid == UPEK_PID;
 }
 
+/* ELAN is capture-test-only; never send the VFS5011 init sequence to it. */
+static int is_elan_sensor(const hack_touchid_sensor_t *s) {
+    return s && s->vid == 0x04f3 && s->pid == 0x0c6e;
+}
+
 /* Image width varies by sensor; height is always however many rows
  * that sensor's capture produced this swipe. vfs5011_extract_template()
  * (despite its name) is genuinely sensor-generic -- any width*height
@@ -486,6 +491,11 @@ static int current_sensor_image_width(void) {
  * through Enroll/Verify. VFS5011 remains the default/fallback so
  * existing behavior for that sensor is completely unchanged. */
 static unsigned char *capture_fingerprint_image(libusb_device_handle *handle, int *out_height) {
+    if (is_elan_sensor(g_detected_sensor)) {
+        *out_height = 0;
+        fprintf(stderr, "ELAN uses the dedicated capture-only test [E].\n");
+        return NULL;
+    }
     if (is_upek_sensor(g_detected_sensor)) {
         return upek_capture_fingerprint_image(handle, out_height);
     }
@@ -493,6 +503,7 @@ static unsigned char *capture_fingerprint_image(libusb_device_handle *handle, in
 }
 
 static int open_device(void) {
+    if (is_elan_sensor(g_detected_sensor)) return -1;
     if (libusb_init(&g_ctx) < 0) return -1;
     libusb_set_option(g_ctx, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_NONE);
 
@@ -1900,7 +1911,10 @@ static void print_menu(void) {
     if (is_upek_sensor(g_detected_sensor)) {
         printf("%s[U]%s Test Capture (UPEK, experimental, no save)\n", VFSC_BOLD, VFSC_RESET);
     }
-    if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor)) {
+    if (is_elan_sensor(g_detected_sensor)) {
+        printf("%s[E]%s Test Capture (ELAN, experimental, statistics only)\n", VFSC_BOLD, VFSC_RESET);
+    }
+    if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor) && !is_elan_sensor(g_detected_sensor)) {
         printf("%s[C]%s View Fingerprint (capture preview, nothing saved)\n", VFSC_BOLD, VFSC_RESET);
         printf("%s[T]%s Sensor Test (swipe heights, tune Swipe to Lock)\n", VFSC_BOLD, VFSC_RESET);
     }
@@ -2019,6 +2033,7 @@ static void print_usage(void) {
     printf("                      (experimental, tester tool, run with --debug)\n");
     printf("  --verify-test       Metallica MIS: calibrate, touch once, match against a print saved by\n");
     printf("                      --enroll-test and exit (experimental, run with --debug)\n");
+    printf("  --capture-elan      ELAN 04f3:0c6e: capture statistics only, no auth setup or image save\n");
     printf("  --probe-7552        VFS7552 (138a:0092): read-only USB probe and exit (tester tool, run with --debug)\n");
     printf("  --fetch-fw-7552     VFS7552: download HP's SoftPaq, verify it and extract the firmware, then exit\n");
     printf("  --cli               Skip the preference pane question and start the CLI client\n");
@@ -3990,6 +4005,31 @@ static void do_test_upek_capture(void) {
             "(need >= %d to be usable for Enroll/Verify). Raw capture "
             "also saved to %s.\n\n",
             width, height, tmpl.nrows, MIN_MINUTIAE, debug_path);
+}
+
+/* Separate process keeps the first ELAN port capture-only and avoids the
+ * client's generic open/reset and NBIS paths. argv is passed without a shell. */
+static int run_elan_capture_test(void) {
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/elan_capture_test", g_exec_dir);
+    if (n < 0 || (size_t)n >= sizeof(path) || access(path, X_OK) != 0) {
+        vfsc_err("ELAN capture test is not built. Run ./prep_and_build.sh --sensor elan --no-pane\n");
+        return 1;
+    }
+    pid_t child = fork();
+    if (child < 0) { perror("ELAN capture fork"); return 1; }
+    if (child == 0) {
+        execl(path, path, "--frames", "400", (char *)NULL);
+        perror("ELAN capture exec");
+        _exit(127);
+    }
+    int status;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno == EINTR) continue;
+        perror("ELAN capture wait"); return 1;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1;
 }
 
 /* [C] View Fingerprint -- captures one swipe and saves it as a
@@ -8490,6 +8530,16 @@ static int run_vfs7552_tools(void) {
 }
 
 int main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--capture-elan") == 0) {
+            if (argc != 2) {
+                vfsc_err("--capture-elan must be used by itself.\n");
+                return 2;
+            }
+            init_exec_dir(argv[0]);
+            return run_elan_capture_test();
+        }
+    }
     /* Checked in its own pass, before anything else (including the
      * sudo re-exec below) -- seeing -h/--help should never require a
      * password prompt. */
@@ -8958,8 +9008,16 @@ int main(int argc, char **argv) {
                     ran_action = false;
                 }
                 break;
+            case 'E': case 'e':
+                if (is_elan_sensor(g_detected_sensor)) {
+                    (void)run_elan_capture_test();
+                } else {
+                    vfsc_warn("No ELAN sensor detected.\n");
+                    ran_action = false;
+                }
+                break;
             case 'C': case 'c':
-                if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor)) {
+                if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor) && !is_elan_sensor(g_detected_sensor)) {
                     sensor_yield_begin();
                     do_view_fingerprint();
                     sensor_yield_end();
@@ -8969,7 +9027,7 @@ int main(int argc, char **argv) {
                 }
                 break;
             case 'T': case 't':
-                if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor)) {
+                if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor) && !is_elan_sensor(g_detected_sensor)) {
                     sensor_yield_begin();
                     do_sensor_test();
                     sensor_yield_end();
