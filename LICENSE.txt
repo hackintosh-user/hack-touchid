@@ -50,3 +50,6 @@ This project incorporates the following third-party components:
   project's Metallica MIS backend was ported to C directly from that
   project's Python source.
   https://github.com/uunicorn/python-validity
+
+* ELAN capture diagnostic (elan/) — LGPL-2.1-or-later. See elan/LICENSE
+  and elan/README.md for the license and protocol source attribution.

@@ -58,6 +58,12 @@ case ",$FAMILIES," in *,metallica,*)
 ;; esac
 
 echo ""
+case ",$FAMILIES," in *,elan,*)
+    echo "==> Building ELAN capture test (no auth backend)..."
+    "$SCRIPT_DIR/../elan/build.sh"
+    BUILT="$BUILT, ./elan_capture_test"
+;; esac
+
 echo "Build complete (sensor family: $FAMILIES): $BUILT"
 
 # Updater test comment
