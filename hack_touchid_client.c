@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <errno.h>
@@ -6263,29 +6264,73 @@ static bool fetch_remote_version_file_animated(const char *branch, const char *l
 /* The updater's single progress bar. One line, redrawn in place via \r. The label changes with
  * the phase (Downloading, Extracting, Building, Installing, removing the old daemon,
  * re-deploying) and the bar refills from 0 for each phase, so the whole update is one line instead
- * of five. upbar_clear() wipes the line before anything else prints (a changelog, a warning, the
- * final message), and the next draw_progress_bar() puts the bar back on a fresh line. */
+ * of five. A small spinner (- \ | /) sits after the percentage and keeps turning while a phase is
+ * busy, so a long build step never looks frozen; at 100% it becomes a check mark. A background
+ * thread turns it, under a lock shared with the bar functions. upbar_clear() wipes the line before
+ * anything else prints (a changelog, a warning, the final message), and the next draw_progress_bar()
+ * puts the bar back on a fresh line. */
 static bool g_upbar_on = false;
+static int g_upbar_percent = 0;
+static int g_upbar_frame = 0;
+static char g_upbar_label[96] = "";
+static bool g_upbar_thread_started = false;
+static pthread_mutex_t g_upbar_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Caller holds g_upbar_lock. */
+static void upbar_render_locked(void) {
+    static const char frames[4] = { '-', '\\', '|', '/' };
+    const int width = 30;
+    int filled = (g_upbar_percent * width) / 100;
+    printf("\r\033[K%s [%s", g_upbar_label, VFSC_BGREEN);
+    for (int i = 0; i < filled; i++) fputs("\xE2\x96\x88", stdout);          /* full block */
+    printf("%s%s", VFSC_RESET, VFSC_DIM);
+    for (int i = filled; i < width; i++) fputs("\xE2\x96\x91", stdout);      /* light shade */
+    printf("%s] %3d%% ", VFSC_RESET, g_upbar_percent);
+    if (g_upbar_percent >= 100) printf("%s\xE2\x9C\x93%s", VFSC_BGREEN, VFSC_RESET);   /* check mark */
+    else printf("%s%c%s", VFSC_BCYAN, frames[g_upbar_frame & 3], VFSC_RESET);
+    fflush(stdout);
+}
+
+static void *upbar_spin_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        usleep(120000);
+        pthread_mutex_lock(&g_upbar_lock);
+        if (g_upbar_on) {
+            g_upbar_frame++;
+            upbar_render_locked();
+        }
+        pthread_mutex_unlock(&g_upbar_lock);
+    }
+    return NULL;
+}
 
 static void upbar_clear(void) {
-    if (!g_upbar_on) return;
-    printf("\r\033[K");
-    fflush(stdout);
-    g_upbar_on = false;
+    pthread_mutex_lock(&g_upbar_lock);
+    if (g_upbar_on) {
+        printf("\r\033[K");
+        fflush(stdout);
+        g_upbar_on = false;
+    }
+    pthread_mutex_unlock(&g_upbar_lock);
 }
 
 static void draw_progress_bar(int percent, const char *label) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
-    const int width = 30;
-    int filled = (percent * width) / 100;
-    printf("\r\033[K%s [%s", label, VFSC_BGREEN);
-    for (int i = 0; i < filled; i++) fputs("\xE2\x96\x88", stdout);          /* full block */
-    printf("%s%s", VFSC_RESET, VFSC_DIM);
-    for (int i = filled; i < width; i++) fputs("\xE2\x96\x91", stdout);      /* light shade */
-    printf("%s] %3d%%", VFSC_RESET, percent);
-    fflush(stdout);
+    pthread_mutex_lock(&g_upbar_lock);
+    g_upbar_percent = percent;
+    snprintf(g_upbar_label, sizeof(g_upbar_label), "%s", label ? label : "");
+    g_upbar_frame++;
     g_upbar_on = true;
+    upbar_render_locked();
+    bool start = !g_upbar_thread_started && isatty(STDOUT_FILENO);
+    if (start) g_upbar_thread_started = true;
+    pthread_mutex_unlock(&g_upbar_lock);
+    if (start) {
+        pthread_t th;
+        if (pthread_create(&th, NULL, upbar_spin_thread, NULL) == 0) pthread_detach(th);
+    }
 }
 
 /* draw_enroll_bar() -- same single-line-redraw-via-\r technique as

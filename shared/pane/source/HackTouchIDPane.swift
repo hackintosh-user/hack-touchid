@@ -276,10 +276,8 @@ class HackTouchIDPane: NSPreferencePane {
     private var menubarReleaseURL: String?
     private let updatesStatus = label("Not checked yet.", secondary: true)
     private let updatesCheckButton = NSButton(title: "Check for Updates", target: nil, action: nil)
-    private let updatesBar = NSProgressIndicator()
-    private var updatesTimer: Timer?
-    private var pendingResults: UpdateResults?
-    private var barTarget = 0.0
+    private let updatesSpinner = NSProgressIndicator()
+    private var updatesCheckID = 0 // an answer that arrives for an older check is ignored
     private let clientInstalledValue = label("")
     private let clientLatestValue = label("")
     private let clientState = label("", secondary: true)
@@ -453,11 +451,10 @@ class HackTouchIDPane: NSPreferencePane {
     }
 
     override func didUnselect() {
-        if updatesTimer != nil {
+        if updatesBusy {
             // Left the pane mid-check: drop the unfinished check so the tab is usable next time.
-            updatesTimer?.invalidate()
-            updatesTimer = nil
-            updatesBar.isHidden = true
+            updatesCheckID += 1
+            updatesSpinner.stopAnimation(nil)
             updatesBusy = false
             updatesChecked = false
             updatesCheckButton.isEnabled = true
@@ -1033,19 +1030,17 @@ class HackTouchIDPane: NSPreferencePane {
         page.alignment = .leading
         page.spacing = 16
 
+        // A spinning wheel next to the button while GitHub is being asked.
+        updatesSpinner.style = .spinning
+        updatesSpinner.controlSize = .small
+        updatesSpinner.isDisplayedWhenStopped = false
         updatesCheckButton.target = self
         updatesCheckButton.action = #selector(checkUpdatesTapped)
+        let updatesControls = NSStackView(views: [updatesSpinner, updatesCheckButton])
+        updatesControls.spacing = 8
         let top = group(nil, rows: [
-            settingRow("Updates", subtitle: updatesStatus, control: updatesCheckButton),
+            settingRow("Updates", subtitle: updatesStatus, control: updatesControls),
         ])
-
-        // Fills left to right while GitHub is being asked, like the macOS copy dialog.
-        updatesBar.style = .bar
-        updatesBar.isIndeterminate = false
-        updatesBar.minValue = 0
-        updatesBar.maxValue = 100
-        updatesBar.doubleValue = 0
-        updatesBar.isHidden = true
 
         clientUpdateButton.target = self
         clientUpdateButton.action = #selector(updateClientTapped)
@@ -1071,8 +1066,8 @@ class HackTouchIDPane: NSPreferencePane {
         note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         note.preferredMaxLayoutWidth = 560
 
-        for v in [top, updatesBar, clientGroup, menubarGroup, note] { page.addArrangedSubview(v) }
-        for v in [top, updatesBar, clientGroup, menubarGroup] { fillWidth(v, of: page) }
+        for v in [top, clientGroup, menubarGroup, note] { page.addArrangedSubview(v) }
+        for v in [top, clientGroup, menubarGroup] { fillWidth(v, of: page) }
         return page
     }
 
@@ -1097,7 +1092,10 @@ class HackTouchIDPane: NSPreferencePane {
         updatesBusy = true
         updatesCheckButton.isEnabled = false
         updatesStatus.stringValue = "Checking GitHub..."
-        startUpdateBar()
+        updatesSpinner.startAnimation(nil)
+        updatesCheckID += 1
+        let checkID = updatesCheckID
+        let startedAt = Date()
 
         let results = UpdateResults()
         results.installedClient = readInstalledClient()
@@ -1110,7 +1108,6 @@ class HackTouchIDPane: NSPreferencePane {
                 results.remoteClient = VersionInfo(text: text)
                 results.clientChecked = results.remoteClient != nil
             }
-            DispatchQueue.main.async { self?.barTarget = max(self?.barTarget ?? 0, 55) }
             // Menu bar app: the newest release whose title says "menubar".
             if let text = fetchText(Links.releasesAPI, github: true),
                let data = text.data(using: .utf8),
@@ -1129,44 +1126,15 @@ class HackTouchIDPane: NSPreferencePane {
                 results.latestMenubarTag = best?.tagName
                 results.latestMenubarURL = best?.url
             }
-            DispatchQueue.main.async { self?.pendingResults = results }
-        }
-    }
-
-    private func startUpdateBar() {
-        updatesBar.doubleValue = 0
-        updatesBar.isHidden = false
-        barTarget = 25
-        pendingResults = nil
-        updatesTimer?.invalidate()
-        updatesTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            self?.tickUpdateBar()
-        }
-    }
-
-    /// Eases toward the current target; the target creeps up while waiting so it never looks
-    /// stuck, and jumps to 100 once the answers are in. The result is shown when the bar is full.
-    private func tickUpdateBar() {
-        let target: Double
-        if pendingResults == nil {
-            barTarget = min(85, barTarget + 0.1)
-            target = barTarget
-        } else {
-            target = 100
-        }
-        let shown = updatesBar.doubleValue
-        updatesBar.doubleValue = min(target, shown + max((target - shown) * 0.06, 0.35))
-        if pendingResults != nil && updatesBar.doubleValue >= 100 { finishUpdateBar() }
-    }
-
-    private func finishUpdateBar() {
-        updatesTimer?.invalidate()
-        updatesTimer = nil
-        guard let r = pendingResults else { return }
-        pendingResults = nil
-        applyUpdateResults(r)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.updatesBar.isHidden = true
+            DispatchQueue.main.async {
+                // Keep the wheel up for at least 0.8 s, so a fast answer does not just flash.
+                let wait = max(0, 0.8 - Date().timeIntervalSince(startedAt))
+                DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+                    guard let self = self, self.updatesCheckID == checkID else { return }
+                    self.updatesSpinner.stopAnimation(nil)
+                    self.applyUpdateResults(results)
+                }
+            }
         }
     }
 
