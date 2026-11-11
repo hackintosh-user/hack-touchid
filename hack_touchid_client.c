@@ -5339,44 +5339,84 @@ static void do_sensor_test(void) {
     }
 }
 
-/* Flips VERSION.txt's BRANCH= between "active-development" (beta/
- * testing builds) and "main" (stable releases) -- an explicit opt-in/
- * opt-out beta toggle rather than the branch just being whatever the
- * currently-installed build happened to ship with. Rewrites
- * VERSION.txt on disk (preserving VERSION=/BUILD=/CRITICAL=, only
- * BRANCH= changes) and updates the in-memory cache immediately, so
- * the update checker later in this same session already sees the new
- * branch with no relaunch needed. The actual switch (downloading/
- * building main instead of active-development, or vice versa) still
- * only happens on the next real update check/install -- this just
- * changes which branch that next check compares against and pulls
- * from. */
-static void do_settings_toggle_beta(void) {
+/* Branches the Settings [7] switcher offers. main is stable,
+ * active-development is the beta channel, elan-0c6e carries the ELAN
+ * 04f3:0c6e capture test. Add a row here to offer another branch. */
+static const struct { const char *name; const char *note; } k_switch_branches[] = {
+    { "main",               "stable releases" },
+    { "active-development", "beta, newest fixes land here first, may be less stable" },
+    { "elan-0c6e",          "ELAN 04f3:0c6e capture test, experimental" },
+};
+#define K_SWITCH_BRANCH_COUNT ((int)(sizeof(k_switch_branches) / sizeof(k_switch_branches[0])))
+
+static bool fetch_remote_version_file(const char *branch, client_version_info_t *out);
+static bool download_build_and_swap_update(const char *branch, bool relaunch,
+                                           const char *new_version, const char *new_build);
+
+/* Settings [7]: picks which branch the client tracks (main, active-
+ * development or elan-0c6e). Rewrites VERSION.txt's BRANCH= (the other
+ * fields are kept) and updates the in-memory cache, so the update
+ * checker already uses the new branch in this session. Because the
+ * newest build on another branch is not always "newer" than what is
+ * installed, it then offers to install that branch right away, which
+ * replaces the installed files with that branch's code. Declining keeps
+ * the choice and the next update check uses it. */
+static void do_settings_switch_branch(void) {
     if (!g_local_version_loaded) {
         g_local_version_loaded = read_local_version_file(&g_local_version_info);
     }
     if (!g_local_version_loaded) {
-        vfsc_err("No local %s found -- can't toggle beta updates on a build from "
+        vfsc_err("No local %s found -- can't switch branches on a build from "
                  "before this feature existed. Update once normally first.\n\n",
                  VERSION_FILE_NAME);
         return;
     }
 
-    bool currently_beta = (strcmp(g_local_version_info.branch, "active-development") == 0);
-    const char *new_branch = currently_beta ? "main" : "active-development";
-    snprintf(g_local_version_info.branch, sizeof(g_local_version_info.branch), "%s", new_branch);
+    printf("Switch branch (current: %s)\n", g_local_version_info.branch[0] ? g_local_version_info.branch : "unknown");
+    for (int i = 0; i < K_SWITCH_BRANCH_COUNT; i++) {
+        bool is_current = strcmp(g_local_version_info.branch, k_switch_branches[i].name) == 0;
+        printf("  %s[%d]%s %s (%s)%s\n", VFSC_BOLD, i + 1, VFSC_RESET,
+               k_switch_branches[i].name, k_switch_branches[i].note, is_current ? "  <- current" : "");
+    }
+    printf("  %s[B]%s Cancel\n", VFSC_BOLD, VFSC_RESET);
+    printf("Choice: ");
+    fflush(stdout);
 
+    char line[16];
+    if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return; }
+    int pick = line[0] - '0';
+    if (pick < 1 || pick > K_SWITCH_BRANCH_COUNT) {
+        printf("Branch unchanged.\n\n");
+        return;
+    }
+    const char *new_branch = k_switch_branches[pick - 1].name;
+    if (strcmp(g_local_version_info.branch, new_branch) == 0) {
+        vfsc_ok("Already tracking \"%s\".\n\n", new_branch);
+        return;
+    }
+
+    snprintf(g_local_version_info.branch, sizeof(g_local_version_info.branch), "%s", new_branch);
     if (!write_local_version_file(&g_local_version_info)) {
         vfsc_err("Failed to write %s: %s\n\n", VERSION_FILE_NAME, strerror(errno));
         return;
     }
+    vfsc_ok("Now tracking \"%s\".\n", new_branch);
 
-    if (currently_beta) {
-        vfsc_ok("Beta updates OFF. Now tracking \"main\" (stable releases).\n\n");
-    } else {
-        vfsc_ok("Beta updates ON. Now tracking \"active-development\" (newest fixes "
-                "land here first, may be less stable).\n\n");
+    client_version_info_t remote;
+    if (!fetch_remote_version_file(new_branch, &remote)) {
+        vfsc_warn("Couldn't reach \"%s\" on GitHub right now. The next update check will use it.\n\n", new_branch);
+        return;
     }
+    printf("Latest on %s: v%s (%s). You have v%s (%s).\n", new_branch, remote.version, remote.build,
+           g_local_version_info.version, g_local_version_info.build);
+    printf("Install it now? This replaces the installed client with the %s code. [Y/N]: ", new_branch);
+    fflush(stdout);
+    char yn[16];
+    if (!fgets(yn, sizeof(yn), stdin) || (yn[0] != 'y' && yn[0] != 'Y')) {
+        printf("Not installing. Your next update check will use \"%s\".\n\n", new_branch);
+        return;
+    }
+    download_build_and_swap_update(new_branch, true, remote.version, remote.build);
 }
 
 /* Settings [U]: turns the live (while-running) update notifications on
@@ -5608,7 +5648,7 @@ static void print_settings_menu(void) {
     }
 
     print_settings_group("UPDATES & NOTIFICATIONS");
-    printf("%s[7]%s Toggle Beta Updates (current: %s)\n", VFSC_BOLD, VFSC_RESET,
+    printf("%s[7]%s Switch Branch (current: %s)\n", VFSC_BOLD, VFSC_RESET,
            g_local_version_loaded && g_local_version_info.branch[0] != '\0'
                ? g_local_version_info.branch : "unknown");
     printf("%s[U]%s Toggle Live Update Notifications (current: %s)\n", VFSC_BOLD, VFSC_RESET,
@@ -5666,7 +5706,7 @@ static void do_settings_menu(void) {
             case '4': do_settings_setup_volume(); break;
             case '5': do_settings_grant_accessibility(); break;
             case '6': do_settings_adjust_threshold(); break;
-            case '7': do_settings_toggle_beta(); break;
+            case '7': do_settings_switch_branch(); break;
             case '8': do_settings_link_volume(); break;
             case '9': do_settings_setup_fpov(); break;
             case 'U': case 'u': do_settings_toggle_live_update(); break;
@@ -6713,6 +6753,20 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     system(cmd);
     draw_progress_bar(100, "Installing");
 
+    /* The copied VERSION.txt carries whatever BRANCH= that branch ships with (elan-0c6e
+     * ships main's), so pin it to the branch this update came from. Otherwise the next
+     * update check would silently move the client to another branch. */
+    {
+        client_version_info_t installed;
+        if (read_local_version_file(&installed)) {
+            snprintf(installed.branch, sizeof(installed.branch), "%s", branch);
+            if (write_local_version_file(&installed)) {
+                g_local_version_info = installed;
+                g_local_version_loaded = true;
+            }
+        }
+    }
+
     /* What changed, straight from the CHANGELOG.md that just landed (no second download). */
     upbar_clear();
     show_whats_new_from_install(branch);
@@ -7003,15 +7057,16 @@ static const char *feed_extract_tag(const char *from, const char *open_tag,
 
 static void do_settings_recent_commits(void) {
     char line[64];
-    printf("Which branch?  Active-development [A] or main [M]: ");
+    printf("Which branch?  Active-development [A], main [M] or elan-0c6e [E]: ");
     fflush(stdout);
     if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return; }
 
     const char *branch = NULL;
     if (line[0] == 'A' || line[0] == 'a') branch = "active-development";
     else if (line[0] == 'M' || line[0] == 'm') branch = "main";
+    else if (line[0] == 'E' || line[0] == 'e') branch = "elan-0c6e";
     else {
-        vfsc_err("Please answer A (active-development) or M (main).\n\n");
+        vfsc_err("Please answer A (active-development), M (main) or E (elan-0c6e).\n\n");
         return;
     }
 
