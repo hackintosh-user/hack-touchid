@@ -45,6 +45,9 @@ This Table will have the currently Supported Sensors or sensors in **Development
 | Prometheus 9d          | 138A | 009d | **Supported & but needs testing**                                             | **Needs testing.**               |
 | UPEK TouchStrip        | 147e | 2016 | **Developing & actively Testing (thanks u/Cold_Salamander7764!)**             | **Features in development**.     |  
 | Synaptics VFS7552      | 138A | 0092 | **Developing & actively Testing (thanks priyashgawande-commits!)**            | **Features in development**.     | 
+| ELAN                   | 04f3 | 0c6e | **Developing, capture-only test on the `elan-0c6e` branch (thanks @s17765152890-gif!)** | **Features in development**.     |
+| EGIS ETU905A80-E       | 1c7a | 05a1 | **Planned support** (requested in issue #15)                                  | **Planned.**                     |
+| ELAN WBF               | 04f3 | 0c4c | **Planned support** (requested in issue #16)                                  | **Planned.**                     |
 
  * Please Keep in Mind that some sensor names are **too long to fit in the table** the VID:PID for each currently or planned sensor will be in the table and regardless the client itself checks if your sensor is supported.
  * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesn't work.
@@ -374,8 +377,9 @@ driver exists.
 * [@Hackintosh-user](https://github.com/hackintosh-user): Main Lead developer
 * [@ilikehackintosh](https://github.com/ilikehackintosh): Documentation handler
 * [u/p0cketl1nt](https://www.reddit.com/user/p0cketl1nt/): Main tester for Metallica MIS 06cb:009a & Prometheus 97 138a:0097 (Massive thank you!)
-* [u/dCold_Salamander7764](https://www.reddit.com/user/Cold_Salamander7764/): Main tester for UPEK touch-Strip 147e:2016 (Massive thank you!)
+* [u/Cold_Salamander7764](https://www.reddit.com/user/Cold_Salamander7764/): Main tester for UPEK touch-Strip 147e:2016 (Massive thank you!)
 * [@priyashgawande-commits](https://github.com/priyashgawande-commits): Main tester for Synaptics VFS7552 (Massive thank you!)
+* [@s17765152890-gif](https://github.com/s17765152890-gif): Contributor, ELAN 04f3:0c6e capture-only test and client dispatch (PR #12, Massive thank you!)
 
 ## License
 
