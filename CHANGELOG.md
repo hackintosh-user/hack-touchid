@@ -3,6 +3,15 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
+## v2.0.1 26C008 | November 11th 2026
+
+- Small fixes
+- New overhauled client look and feel
+- custom branch switcher for beta testing.
+
+No bugs were reported in this build. 
+
+---
 ## v2.0.0 | November 10th 2026
 
 - New sensor, fully supported: Prometheus 97 (`138a:0097`), confirmed working on a ThinkPad X1C5. Pairing, calibration, Enroll, Verify, lock screen unlock, padlock unlock and the Settings pane all work. It shares the Metallica MIS driver, so `[P]` Pair, `--enroll-test`, `--verify-test`, `--mmis-connect` and `--mmis-calibrate` apply to it too.
