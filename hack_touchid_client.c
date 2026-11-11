@@ -718,6 +718,7 @@ static int capture_quality_template(struct xyt_struct *out_tmpl, int quiet) {
  * and every VFSC_* macro below reads through it, so the rest of the
  * file never needs its own isatty() checks. */
 static int g_color_enabled = 1;
+static int g_ui_unicode = 1;   /* box and dot characters; falls back to ASCII when output is not a terminal */
 
 #define VFSC_RESET   (g_color_enabled ? "\033[0m"    : "")
 #define VFSC_BOLD    (g_color_enabled ? "\033[1m"    : "")
@@ -936,6 +937,7 @@ static void vfsc_warn(const char *fmt, ...) {
 static void init_color_support(void) {
     if (!isatty(STDOUT_FILENO)) {
         g_color_enabled = 0;
+        g_ui_unicode = 0;
         return;
     }
     const char *no_color = getenv("NO_COLOR");
@@ -1211,6 +1213,131 @@ static bool write_local_version_file(const client_version_info_t *info) {
 static client_version_info_t g_local_version_info;
 static bool g_local_version_loaded = false;
 
+/* ------------------------------------------------------------------ *
+ * Menu look: boxed header, a status checklist with dots, and two-column
+ * menus. Box and dot characters fall back to ASCII when the output is not
+ * a terminal, and colors follow g_color_enabled as everywhere else.
+ * ------------------------------------------------------------------ */
+#define UI_WIDTH 72
+#define UI_COL_L 38
+#define UI_TL   (g_ui_unicode ? "╭" : "+")
+#define UI_TR   (g_ui_unicode ? "╮" : "+")
+#define UI_BL   (g_ui_unicode ? "╰" : "+")
+#define UI_BR   (g_ui_unicode ? "╯" : "+")
+#define UI_H    (g_ui_unicode ? "─" : "-")
+#define UI_V    (g_ui_unicode ? "│" : "|")
+#define UI_ON   (g_ui_unicode ? "●" : "*")
+#define UI_OFF  (g_ui_unicode ? "○" : "o")
+#define UI_MARK (g_ui_unicode ? "◉" : "@")
+#define UI_SEP  (g_ui_unicode ? "·" : "|")
+
+/* Visible columns of a UTF-8 string (counts every byte that is not a continuation byte). */
+static int ui_cols(const char *s) {
+    int n = 0;
+    for (; *s; s++) if (((unsigned char)*s & 0xC0) != 0x80) n++;
+    return n;
+}
+
+static void ui_spaces(int n) {
+    while (n-- > 0) putchar(' ');
+}
+
+static void ui_hrule(int n, const char *color) {
+    printf("%s", color);
+    for (int i = 0; i < n; i++) fputs(UI_H, stdout);
+    printf("%s", VFSC_RESET);
+}
+
+/* " TITLE ─────────" filling the line. */
+static void ui_section(const char *title) {
+    printf(" %s%s%s ", VFSC_BCYAN, title, VFSC_RESET);
+    ui_hrule(UI_WIDTH - ui_cols(title) - 3, VFSC_DIM);
+    putchar('\n');
+}
+
+/* The boxed title with version, build and branch on the right. */
+static void ui_header(void) {
+    if (!g_local_version_loaded) {
+        g_local_version_loaded = read_local_version_file(&g_local_version_info);
+    }
+    char right[160];
+    if (g_local_version_loaded && g_local_version_info.build[0] != '\0') {
+        snprintf(right, sizeof(right), "v%s %s %s %s %s", VFS5011_PROJECT_VERSION, UI_SEP,
+                 g_local_version_info.build, UI_SEP,
+                 g_local_version_info.branch[0] ? g_local_version_info.branch : "main");
+    } else {
+        snprintf(right, sizeof(right), "v%s", VFS5011_PROJECT_VERSION);
+    }
+    const int inner = UI_WIDTH - 2;
+    const char *title = "HACKINTOSH TOUCH-ID";
+    const char *sub = "Multi-sensor fingerprint auth for macOS";
+
+    printf("%s%s", VFSC_CYAN, UI_TL);
+    for (int i = 0; i < inner; i++) fputs(UI_H, stdout);
+    printf("%s%s\n", UI_TR, VFSC_RESET);
+
+    int used = 2 + 1 + 1 + ui_cols(title) + ui_cols(right) + 2;
+    printf("%s%s%s  %s%s%s %s%s%s", VFSC_CYAN, UI_V, VFSC_RESET, VFSC_BGREEN, UI_MARK, VFSC_RESET, VFSC_BOLD, title, VFSC_RESET);
+    ui_spaces(inner - used);
+    printf("%s%s  %s%s%s%s\n", VFSC_DIM, right, VFSC_RESET, VFSC_CYAN, UI_V, VFSC_RESET);
+
+    printf("%s%s%s    %s%s%s", VFSC_CYAN, UI_V, VFSC_RESET, VFSC_DIM, sub, VFSC_RESET);
+    ui_spaces(inner - 4 - ui_cols(sub));
+    printf("%s%s%s\n", VFSC_CYAN, UI_V, VFSC_RESET);
+
+    printf("%s%s", VFSC_CYAN, UI_BL);
+    for (int i = 0; i < inner; i++) fputs(UI_H, stdout);
+    printf("%s%s\n\n", UI_BR, VFSC_RESET);
+}
+
+/* One status line: state 1 = good (green dot), 0 = needs attention (yellow),
+ * -1 = unknown (dim). The note is dim text after the value. */
+static void ui_status_row(int state, const char *label, const char *value, const char *note) {
+    const char *col = state > 0 ? VFSC_GREEN : (state == 0 ? VFSC_YELLOW : VFSC_DIM);
+    printf(" %s%s%s %s%-15s%s%s%s%s", col, state > 0 ? UI_ON : UI_OFF, VFSC_RESET,
+           VFSC_DIM, label, VFSC_RESET, col, value, VFSC_RESET);
+    if (note && note[0]) printf("  %s%s%s", VFSC_DIM, note, VFSC_RESET);
+    putchar('\n');
+}
+
+typedef struct {
+    const char *key;
+    const char *text;
+    const char *note;   /* dim text after the label, or NULL */
+    bool danger;        /* key shown in red */
+} ui_item_t;
+
+static int ui_item_cols(const ui_item_t *it) {
+    return 1 + 2 + (int)strlen(it->key) + 1 + ui_cols(it->text) + (it->note ? 1 + ui_cols(it->note) : 0);
+}
+
+static void ui_print_item(const ui_item_t *it) {
+    printf(" %s[%s]%s %s", it->danger ? VFSC_BRED : VFSC_BOLD, it->key, VFSC_RESET, it->text);
+    if (it->note) printf(" %s%s%s", VFSC_DIM, it->note, VFSC_RESET);
+}
+
+/* Two titled columns of menu items, side by side. */
+static void ui_two_cols(const char *left_title, const char *right_title,
+                        const ui_item_t *left, int nl, const ui_item_t *right, int nr) {
+    printf(" %s%s%s", VFSC_BCYAN, left_title, VFSC_RESET);
+    ui_spaces(UI_COL_L - 1 - ui_cols(left_title));
+    printf(" %s%s%s\n", VFSC_BCYAN, right_title, VFSC_RESET);
+    int rows = nl > nr ? nl : nr;
+    for (int i = 0; i < rows; i++) {
+        if (i < nl) ui_print_item(&left[i]);
+        if (i < nr) {
+            ui_spaces(UI_COL_L - (i < nl ? ui_item_cols(&left[i]) : 0));
+            ui_print_item(&right[i]);
+        }
+        putchar('\n');
+    }
+}
+
+static void ui_prompt(const char *label) {
+    printf("%s%s%s %s%s:%s ", VFSC_GREEN, g_ui_unicode ? " ❯" : " >", VFSC_RESET, VFSC_BOLD, label, VFSC_RESET);
+    fflush(stdout);
+}
+
 static void print_banner(void) {
     if (!g_local_version_loaded) {
         g_local_version_loaded = read_local_version_file(&g_local_version_info);
@@ -1246,6 +1373,15 @@ static void clear_screen_and_redraw_banner(void) {
     printf("\033[2J\033[H");
     fflush(stdout);
     print_banner();
+}
+
+/* Same clear, but redraws the compact boxed header. Used when coming back to
+ * the menu after an action, where the full logo is just noise. */
+static void clear_screen_and_redraw_header(void) {
+    if (!g_color_enabled) return;
+    printf("\033[2J\033[H");
+    fflush(stdout);
+    ui_header();
 }
 
 /* Multi-finger storage: each enrolled finger gets its own file of
@@ -1887,110 +2023,112 @@ static void print_menu(void) {
     int deployed = is_auth_service_deployed();
     int volume_ready = is_volume_configured();
     int accessibility_ready = is_accessibility_granted();
+    char val[200];
 
-    printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
-    printf("%sActions%s\n", VFSC_DIM, VFSC_RESET);
-    printf("%s[1]%s Enroll a Finger\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[2]%s Verify Fingerprint Match [Score / %d]\n", VFSC_BOLD, VFSC_RESET, g_match_threshold);
-    printf("%s[3]%s Deploy for Authentication Services\n", VFSC_BOLD, VFSC_RESET);
-    if (is_metallica_mis_sensor(g_detected_sensor)) {
-        printf("%s[P]%s Pair Sensor (Metallica MIS, experimental)\n", VFSC_BOLD, VFSC_RESET);
-        printf("%s[B]%s Calibrate Sensor (Metallica MIS, experimental)\n", VFSC_BOLD, VFSC_RESET);
-        printf("%s[N]%s Rename a Print (Metallica MIS, experimental)\n", VFSC_BOLD, VFSC_RESET);
+    ui_section("STATUS");
+    if (g_detected_sensor) {
+        snprintf(val, sizeof(val), "%s %04x:%04x  Ready", g_detected_sensor->display_name,
+                 g_detected_sensor->vid, g_detected_sensor->pid);
+        ui_status_row(1, "Sensor", val, NULL);
+    } else {
+        ui_status_row(0, "Sensor", "Not detected", NULL);
     }
-    if (is_upek_sensor(g_detected_sensor)) {
-        printf("%s[U]%s Test Capture (UPEK, experimental, no save)\n", VFSC_BOLD, VFSC_RESET);
-    }
-    if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor)) {
-        printf("%s[C]%s View Fingerprint (capture preview, nothing saved)\n", VFSC_BOLD, VFSC_RESET);
-        printf("%s[T]%s Sensor Test (swipe heights, tune Swipe to Lock)\n", VFSC_BOLD, VFSC_RESET);
-    }
-    printf("%s[FP]%s Fpbootd, Pre-Login Auth %s(coming soon)%s\n",
-           VFSC_BOLD, VFSC_RESET, VFSC_DIM, VFSC_RESET);
-    printf("\n");
-    printf("%sUtilities%s\n", VFSC_DIM, VFSC_RESET);
-    printf("%s[I]%s Install Preference Pane (System Settings)\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[M]%s Install / Repair Menu Bar App\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[D]%s Diagnose (generate a report for troubleshooting)\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[S]%s Settings\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[A]%s About\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[H]%s Help\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[X]%s Uninstall\n", VFSC_BRED, VFSC_RESET);
-    printf("%s[Q]%s Quit\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
-    {
-        char macos_line[128];
-        get_macos_version_line(macos_line, sizeof(macos_line));
-        printf("  * Reported macOS Version: %s%s%s\n", VFSC_DIM, macos_line, VFSC_RESET);
-    }
-    printf("  * Sensor Status        : %s%s%s\n",
-           sensor_present ? VFSC_GREEN : VFSC_YELLOW,
-           sensor_present ? "Ready" : "Not Detected", VFSC_RESET);
-    printf("  * Authentication Service: %s%s%s\n",
-           deployed ? VFSC_GREEN : VFSC_YELLOW,
-           deployed ? "Deployed" : "Not Deployed", VFSC_RESET);
-    printf("  * Template Volume      : %s%s%s\n",
-           volume_ready ? VFSC_GREEN : VFSC_YELLOW,
-           volume_ready ? "Configured" : "Not Set Up", VFSC_RESET);
-    printf("  * Accessibility Grant  : %s%s%s\n",
-           accessibility_ready ? VFSC_GREEN : VFSC_YELLOW,
-           accessibility_ready ? "Granted" : "Not Detected", VFSC_RESET);
+    ui_status_row(deployed ? 1 : 0, "Service", deployed ? "Deployed" : "Not deployed", NULL);
+    ui_status_row(volume_ready ? 1 : 0, "Volume", volume_ready ? "Configured" : "Not set up", NULL);
+    ui_status_row(accessibility_ready ? 1 : 0, "Accessibility", accessibility_ready ? "Granted" : "Not detected", NULL);
+
     /* Not a live check either, same reasoning as Fingers below. */
     password_state_load();
     if (g_password_state < 0) {
-        printf("  * Login Password       : %sUnknown (run Deploy/Verify to check)%s\n", VFSC_DIM, VFSC_RESET);
+        ui_status_row(-1, "Password", "Unknown", "run Deploy/Verify to check");
     } else if (g_password_state == 0) {
-        printf("  * Login Password       : %sNot stored%s%s (Settings [3] to add)%s\n",
-               VFSC_YELLOW, VFSC_RESET, VFSC_DIM, VFSC_RESET);
-    } else if (g_password_verified) {
-        printf("  * Login Password       : %sStored%s\n", VFSC_GREEN, VFSC_RESET);
+        ui_status_row(0, "Password", "Not stored", "Settings [3] to add");
     } else {
-        printf("  * Login Password       : %sStored%s%s (last check)%s\n",
-               VFSC_GREEN, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+        ui_status_row(1, "Password", "Stored", g_password_verified ? NULL : "last check");
     }
-    /* Not a live check — see g_finger_count comment above. The
-     * templates volume is unmounted at rest; run Enroll, Verify, or
-     * Manage once this session to populate this. */
+
+    /* Not a live check -- see g_finger_count comment above. The templates volume is unmounted
+     * at rest; run Enroll, Verify, or Manage once this session to populate this. */
     if (g_detected_sensor && is_metallica_mis_sensor(g_detected_sensor)) {
         if (g_mmis_prints_listed == 0) {
-            printf("  * Fingers              : %sNone on the sensor%s\n", VFSC_YELLOW, VFSC_RESET);
+            ui_status_row(0, "Fingers", "None on the sensor", NULL);
         } else if (g_mmis_prints_listed > 0) {
-            printf("  * Fingers              : %s%d on the sensor%s\n", VFSC_GREEN, g_mmis_prints_listed, VFSC_RESET);
+            snprintf(val, sizeof(val), "%d on the sensor", g_mmis_prints_listed);
+            ui_status_row(1, "Fingers", val, NULL);
         } else if (g_mmis_prints_present) {
-            printf("  * Fingers              : %sOn the sensor%s%s (confirmed this session)%s\n",
-                   VFSC_GREEN, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+            ui_status_row(1, "Fingers", "On the sensor", "confirmed this session");
         } else {
-            printf("  * Fingers              : %sStored on the sensor%s%s (run Verify to check)%s\n",
-                   VFSC_DIM, VFSC_RESET, VFSC_DIM, VFSC_RESET);
+            ui_status_row(-1, "Fingers", "Stored on the sensor", "run Verify to check");
         }
     } else if (g_finger_count < 0) {
-        printf("  * Fingers              : %sUnknown (run Verify/Enroll to check)%s\n", VFSC_DIM, VFSC_RESET);
+        ui_status_row(-1, "Fingers", "Unknown", "run Verify/Enroll to check");
     } else if (g_finger_count == 0) {
-        printf("  * Fingers              : %sNone enrolled%s\n", VFSC_YELLOW, VFSC_RESET);
+        ui_status_row(0, "Fingers", "None enrolled", NULL);
     } else {
-        printf("  * Fingers              : %s%d Enrolled%s (", VFSC_GREEN, g_finger_count, VFSC_RESET);
-        for (int i = 0; i < g_finger_count; i++) {
-            printf("%s%s", i > 0 ? ", " : "", g_finger_labels[i]);
+        size_t o = (size_t)snprintf(val, sizeof(val), "%d Enrolled (", g_finger_count);
+        for (int i = 0; i < g_finger_count && o < sizeof(val); i++) {
+            o += (size_t)snprintf(val + o, sizeof(val) - o, "%s%s", i > 0 ? ", " : "", g_finger_labels[i]);
         }
-        printf(")\n");
+        if (o < sizeof(val)) snprintf(val + o, sizeof(val) - o, ")");
+        ui_status_row(1, "Fingers", val, NULL);
     }
-    if (g_detected_sensor) {
-        printf("  * Sensor Model         : %s {0x%04X:0x%04X}\n",
-               g_detected_sensor->display_name, g_detected_sensor->vid, g_detected_sensor->pid);
-    } else {
-        printf("  * Sensor Model         : %sNone Detected%s\n", VFSC_YELLOW, VFSC_RESET);
+    printf("\n");
+
+    char verify_note[24];
+    snprintf(verify_note, sizeof(verify_note), "score/%d", g_match_threshold);
+    ui_item_t auth[4], tools[4], sys_l[4], sys_r[4];
+    int na = 0, nt = 0;
+    auth[na++] = (ui_item_t){ "1", "Enroll a Finger", NULL, false };
+    auth[na++] = (ui_item_t){ "2", "Verify Fingerprint", verify_note, false };
+    auth[na++] = (ui_item_t){ "3", "Deploy Authentication Services", NULL, false };
+    auth[na++] = (ui_item_t){ "FP", "Fpbootd Pre-Login", "soon", false };
+    if (is_metallica_mis_sensor(g_detected_sensor)) {
+        tools[nt++] = (ui_item_t){ "P", "Pair Sensor", "experimental", false };
+        tools[nt++] = (ui_item_t){ "B", "Calibrate Sensor", "experimental", false };
+        tools[nt++] = (ui_item_t){ "N", "Rename a Print", "experimental", false };
+    }
+    if (is_upek_sensor(g_detected_sensor)) {
+        tools[nt++] = (ui_item_t){ "U", "Test Capture", "experimental", false };
+    }
+    if (g_detected_sensor && !is_metallica_mis_sensor(g_detected_sensor)) {
+        tools[nt++] = (ui_item_t){ "C", "View Fingerprint", NULL, false };
+        tools[nt++] = (ui_item_t){ "T", "Sensor Test", NULL, false };
+    }
+    if (nt == 0) tools[nt++] = (ui_item_t){ "-", "No sensor tools", NULL, false };
+    ui_two_cols("AUTHENTICATE", "SENSOR TOOLS", auth, na, tools, nt);
+    printf("\n");
+
+    sys_l[0] = (ui_item_t){ "S", "Settings", NULL, false };
+    sys_l[1] = (ui_item_t){ "I", "Install Preference Pane", NULL, false };
+    sys_l[2] = (ui_item_t){ "M", "Install / Repair Menu Bar App", NULL, false };
+    sys_l[3] = (ui_item_t){ "X", "Uninstall", NULL, true };
+    sys_r[0] = (ui_item_t){ "D", "Diagnose Report", NULL, false };
+    sys_r[1] = (ui_item_t){ "A", "About", NULL, false };
+    sys_r[2] = (ui_item_t){ "H", "Help", NULL, false };
+    sys_r[3] = (ui_item_t){ "Q", "Quit", NULL, false };
+    ui_two_cols("SYSTEM", "HELP AND MORE", sys_l, 4, sys_r, 4);
+    printf("\n");
+
+    printf(" ");
+    ui_hrule(UI_WIDTH - 2, VFSC_DIM);
+    printf("\n");
+    {
+        char macos_line[128];
+        get_macos_version_line(macos_line, sizeof(macos_line));
+        printf(" %sReported macOS Version: %s%s\n", VFSC_DIM, macos_line, VFSC_RESET);
     }
     {
         char fpbootd_status[80];
         get_fpbootd_status_line(fpbootd_status, sizeof(fpbootd_status));
-        printf("  * Fpbootd Version      : %s%s%s\n", VFSC_DIM, fpbootd_status, VFSC_RESET);
+        printf(" %sFpbootd Version       : %s%s\n", VFSC_DIM, fpbootd_status, VFSC_RESET);
     }
     {
         char fpov_status[80];
         get_fpov_status_line(fpov_status, sizeof(fpov_status));
-        printf("  * FPOV Version         : %s%s%s\n", VFSC_DIM, fpov_status, VFSC_RESET);
+        printf(" %sFPOV Version          : %s%s\n", VFSC_DIM, fpov_status, VFSC_RESET);
     }
-    printf("%s%s%s\n\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+    (void)sensor_present;
+    printf("\n");
 }
 
 /* Shared by [H] in the interactive menu and -h/--help on the command
@@ -5299,46 +5437,6 @@ static void do_sensor_test(void) {
     }
 }
 
-/* Flips VERSION.txt's BRANCH= between "active-development" (beta/
- * testing builds) and "main" (stable releases) -- an explicit opt-in/
- * opt-out beta toggle rather than the branch just being whatever the
- * currently-installed build happened to ship with. Rewrites
- * VERSION.txt on disk (preserving VERSION=/BUILD=/CRITICAL=, only
- * BRANCH= changes) and updates the in-memory cache immediately, so
- * the update checker later in this same session already sees the new
- * branch with no relaunch needed. The actual switch (downloading/
- * building main instead of active-development, or vice versa) still
- * only happens on the next real update check/install -- this just
- * changes which branch that next check compares against and pulls
- * from. */
-static void do_settings_toggle_beta(void) {
-    if (!g_local_version_loaded) {
-        g_local_version_loaded = read_local_version_file(&g_local_version_info);
-    }
-    if (!g_local_version_loaded) {
-        vfsc_err("No local %s found -- can't toggle beta updates on a build from "
-                 "before this feature existed. Update once normally first.\n\n",
-                 VERSION_FILE_NAME);
-        return;
-    }
-
-    bool currently_beta = (strcmp(g_local_version_info.branch, "active-development") == 0);
-    const char *new_branch = currently_beta ? "main" : "active-development";
-    snprintf(g_local_version_info.branch, sizeof(g_local_version_info.branch), "%s", new_branch);
-
-    if (!write_local_version_file(&g_local_version_info)) {
-        vfsc_err("Failed to write %s: %s\n\n", VERSION_FILE_NAME, strerror(errno));
-        return;
-    }
-
-    if (currently_beta) {
-        vfsc_ok("Beta updates OFF. Now tracking \"main\" (stable releases).\n\n");
-    } else {
-        vfsc_ok("Beta updates ON. Now tracking \"active-development\" (newest fixes "
-                "land here first, may be less stable).\n\n");
-    }
-}
-
 /* Settings [U]: turns the live (while-running) update notifications on
  * or off and saves the choice so it survives relaunches. The boot-time
  * update check is not affected. */
@@ -5362,6 +5460,7 @@ static void do_settings_toggle_live_update(void) {
 
 /* Defined further down in the updater section. */
 static void do_settings_recent_commits(void);
+static void do_settings_switch_branch(void);
 static bool fetch_remote_version_file(const char *branch, client_version_info_t *out);
 static bool fetch_remote_version_file_animated(const char *branch, const char *label, client_version_info_t *out);
 static void run_update_prompt(const client_version_info_t *local,
@@ -5420,8 +5519,7 @@ static void do_settings_check_updates(void) {
 
 /* One group heading: bold cyan title, then a dim underline. */
 static void print_settings_group(const char *title) {
-    printf("%s%s%s\n", VFSC_BCYAN, title, VFSC_RESET);
-    printf("%s--------------------------------%s\n", VFSC_DIM, VFSC_RESET);
+    ui_section(title);
 }
 
 /* ------------------------------------------------------------------ *
@@ -5538,47 +5636,47 @@ static void print_settings_menu(void) {
         g_local_version_loaded = read_local_version_file(&g_local_version_info);
     }
 
-    printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
-    printf("%s                              SETTINGS%s\n", VFSC_BCYAN, VFSC_RESET);
-    printf("%s%s%s\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+    ui_header();
 
     print_settings_group("FINGERPRINT & AUTHENTICATION");
-    printf("%s[1]%s Delete Fingerprint Templates\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[2]%s Clear Password Cache\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[3]%s Set/Update Auto-Type Password\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[6]%s Adjust Match Threshold (current: %d)\n", VFSC_BOLD, VFSC_RESET, g_match_threshold);
+    printf(" %s[1]%s Delete Fingerprint Templates\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[2]%s Clear Password Cache\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[3]%s Set/Update Auto-Type Password\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[6]%s Adjust Match Threshold (current: %d)\n", VFSC_BOLD, VFSC_RESET, g_match_threshold);
     printf("\n");
 
     print_settings_group("STORAGE & SYSTEM INTEGRATION");
-    printf("%s[4]%s Set Up / Repair Template Volume\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[5]%s Grant/Verify Accessibility Permission\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[8]%s Link to a Different Volume / Check for Orphans\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[9]%s Set Up FPOV (Multi-OS Version Check, dual/triple boot)\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[4]%s Set Up / Repair Template Volume\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[5]%s Grant/Verify Accessibility Permission\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[8]%s Link to a Different Volume / Check for Orphans\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[9]%s Set Up FPOV (Multi-OS Version Check, dual/triple boot)\n", VFSC_BOLD, VFSC_RESET);
     printf("\n");
 
     print_settings_group("SWIPE TO LOCK");
-    printf("%s[L]%s Swipe to Lock Sensitivity (current: %d rows)\n", VFSC_BOLD, VFSC_RESET, read_lockswipe_min_height());
+    printf(" %s[L]%s Swipe to Lock Sensitivity (current: %d rows)\n", VFSC_BOLD, VFSC_RESET, read_lockswipe_min_height());
     printf("\n");
 
     if (is_vfs5011_sensor()) {
         print_settings_group("SENSOR LED");
-        printf("%s[LED]%s Sensor LED Settings (brightness: %d%%, red on wrong finger: %s)\n", VFSC_BOLD, VFSC_RESET,
+        printf(" %s[LED]%s Sensor LED Settings (brightness: %d%%, red on wrong finger: %s)\n", VFSC_BOLD, VFSC_RESET,
                vfs5011_led_load_brightness(), vfs5011_led_load_red_enabled() ? "ON" : "OFF");
         printf("\n");
     }
 
     print_settings_group("UPDATES & NOTIFICATIONS");
-    printf("%s[7]%s Toggle Beta Updates (current: %s)\n", VFSC_BOLD, VFSC_RESET,
+    printf(" %s[7]%s Switch Branch (current: %s)\n", VFSC_BOLD, VFSC_RESET,
            g_local_version_loaded && g_local_version_info.branch[0] != '\0'
                ? g_local_version_info.branch : "unknown");
-    printf("%s[U]%s Toggle Live Update Notifications (current: %s)\n", VFSC_BOLD, VFSC_RESET,
+    printf(" %s[U]%s Toggle Live Update Notifications (current: %s)\n", VFSC_BOLD, VFSC_RESET,
            g_live_update_check ? "ON" : "OFF");
-    printf("%s[CU]%s Check for Updates Now\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s[CM]%s Show Recent Commits (last 5 per branch)\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[CU]%s Check for Updates Now\n", VFSC_BOLD, VFSC_RESET);
+    printf(" %s[CM]%s Show Recent Commits (last 5 on a branch)\n", VFSC_BOLD, VFSC_RESET);
 
     printf("\n");
-    printf("%s[B]%s Back\n", VFSC_BOLD, VFSC_RESET);
-    printf("%s%s%s\n\n", VFSC_CYAN, VFSC_RULE, VFSC_RESET);
+    printf(" %s[B]%s Back\n", VFSC_BOLD, VFSC_RESET);
+    printf(" ");
+    ui_hrule(UI_WIDTH - 2, VFSC_DIM);
+    printf("\n\n");
 }
 
 /* Small dedicated loop, same pattern as main()'s — stays inside
@@ -5590,8 +5688,7 @@ static void do_settings_menu(void) {
     char line[64];
     for (;;) {
         print_settings_menu();
-        printf("%s<Hack-touchid Settings>%s ", VFSC_BOLD, VFSC_RESET);
-        fflush(stdout);
+        ui_prompt("Settings");
 
         if (!fgets(line, sizeof(line), stdin)) {
             printf("\n");
@@ -5626,7 +5723,7 @@ static void do_settings_menu(void) {
             case '4': do_settings_setup_volume(); break;
             case '5': do_settings_grant_accessibility(); break;
             case '6': do_settings_adjust_threshold(); break;
-            case '7': do_settings_toggle_beta(); break;
+            case '7': do_settings_switch_branch(); break;
             case '8': do_settings_link_volume(); break;
             case '9': do_settings_setup_fpov(); break;
             case 'U': case 'u': do_settings_toggle_live_update(); break;
@@ -6673,6 +6770,20 @@ static bool download_build_and_swap_update(const char *branch, bool relaunch,
     system(cmd);
     draw_progress_bar(100, "Installing");
 
+    /* The copied VERSION.txt carries the BRANCH= its branch ships with (a feature branch
+     * can ship main's), so pin it to the branch this update came from. Otherwise the next
+     * update check would silently move the client to another branch. */
+    {
+        client_version_info_t installed;
+        if (read_local_version_file(&installed)) {
+            snprintf(installed.branch, sizeof(installed.branch), "%s", branch);
+            if (write_local_version_file(&installed)) {
+                g_local_version_info = installed;
+                g_local_version_loaded = true;
+            }
+        }
+    }
+
     /* What changed, straight from the CHANGELOG.md that just landed (no second download). */
     upbar_clear();
     show_whats_new_from_install(branch);
@@ -6908,6 +7019,176 @@ static void show_whats_new_from_install(const char *branch) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Branch list + switcher (Settings [7], and the branch picker of [CM])
+ *
+ * The branches come from GitHub at the moment you open the menu, so a
+ * new branch (a sensor test branch, say) shows up with no client update.
+ * `git ls-remote` is tried first (no API rate limit, git comes with the
+ * Command Line Tools the project already needs), then the GitHub API
+ * through curl. If both fail, main and active-development are offered.
+ * Branch names come from the network, so anything outside letters,
+ * digits and . _ - / is dropped before it can reach a URL or a shell.
+ * ------------------------------------------------------------------ */
+#define BRANCH_LIST_MAX 24
+#define BRANCH_API_URL "https://api.github.com/repos/hackintosh-user/hack-touchid/branches?per_page=100"
+typedef char branch_name_t[64];
+
+static bool branch_name_is_safe(const char *n) {
+    if (n[0] == '\0' || n[0] == '-' || strlen(n) >= sizeof(branch_name_t)) return false;
+    for (const char *c = n; *c; c++) {
+        if (!(isalnum((unsigned char)*c) || *c == '.' || *c == '_' || *c == '-' || *c == '/')) return false;
+    }
+    return strstr(n, "..") == NULL;
+}
+
+static int branch_rank(const char *n) {
+    if (strcmp(n, "main") == 0) return 0;
+    if (strcmp(n, "active-development") == 0) return 1;
+    return 2;
+}
+
+static int branch_cmp(const void *a, const void *b) {
+    const char *x = (const char *)a, *y = (const char *)b;
+    int rx = branch_rank(x), ry = branch_rank(y);
+    if (rx != ry) return rx - ry;
+    return strcmp(x, y);
+}
+
+static int branch_list_add(branch_name_t *names, int n, int max, const char *name, size_t len) {
+    if (n >= max || len == 0 || len >= sizeof(branch_name_t)) return n;
+    char tmp[sizeof(branch_name_t)];
+    memcpy(tmp, name, len);
+    tmp[len] = '\0';
+    if (!branch_name_is_safe(tmp)) return n;
+    for (int i = 0; i < n; i++) if (strcmp(names[i], tmp) == 0) return n;
+    snprintf(names[n], sizeof(branch_name_t), "%s", tmp);
+    return n + 1;
+}
+
+static int fetch_remote_branch_list(branch_name_t *names, int max) {
+    int n = 0;
+    FILE *fp = popen("GIT_TERMINAL_PROMPT=0 git ls-remote --heads '" UPDATE_REPO_URL ".git' 2>/dev/null", "r");
+    if (fp) {
+        char line[512];
+        while (fgets(line, sizeof(line), fp)) {
+            char *p = strstr(line, "refs/heads/");
+            if (!p) continue;
+            p += strlen("refs/heads/");
+            n = branch_list_add(names, n, max, p, strcspn(p, "\r\n"));
+        }
+        pclose(fp);
+    }
+    if (n > 0) return n;
+
+    fp = popen("curl -fsSL -m 8 '" BRANCH_API_URL "' 2>/dev/null", "r");
+    if (fp) {
+        static char buf[32768];
+        size_t total = fread(buf, 1, sizeof(buf) - 1, fp);
+        pclose(fp);
+        buf[total] = '\0';
+        char *p = buf;
+        while ((p = strstr(p, "\"name\"")) != NULL) {
+            p += 6;
+            while (*p == ' ' || *p == ':') p++;
+            if (*p != '"') continue;
+            p++;
+            char *e = strchr(p, '"');
+            if (!e) break;
+            n = branch_list_add(names, n, max, p, (size_t)(e - p));
+            p = e + 1;
+        }
+    }
+    return n;
+}
+
+/* Asks GitHub which branches exist and lets the person pick one by
+ * number. Returns false on cancel. */
+static bool ui_pick_branch(const char *title, const char *current, char *out, size_t out_size) {
+    branch_name_t names[BRANCH_LIST_MAX];
+    printf("Looking up branches on GitHub...\n");
+    fflush(stdout);
+    int n = fetch_remote_branch_list(names, BRANCH_LIST_MAX);
+    if (n <= 0) {
+        vfsc_warn("Couldn't list the branches (no internet?). Offering the two main ones.\n");
+        n = branch_list_add(names, 0, BRANCH_LIST_MAX, "main", 4);
+        n = branch_list_add(names, n, BRANCH_LIST_MAX, "active-development", 18);
+    }
+    qsort(names, (size_t)n, sizeof(branch_name_t), branch_cmp);
+
+    printf("\n%s (current: %s)\n", title, current[0] ? current : "unknown");
+    for (int i = 0; i < n; i++) {
+        const char *note = strcmp(names[i], "main") == 0 ? "stable"
+                         : strcmp(names[i], "active-development") == 0 ? "beta, newest fixes first"
+                         : "experimental";
+        printf("  %s[%d]%s %s %s(%s)%s%s\n", VFSC_BOLD, i + 1, VFSC_RESET, names[i], VFSC_DIM, note, VFSC_RESET,
+               strcmp(names[i], current) == 0 ? "  <- current" : "");
+    }
+    printf("  %s[B]%s Cancel\n", VFSC_BOLD, VFSC_RESET);
+    printf("Choice: ");
+    fflush(stdout);
+
+    char line[16];
+    if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return false; }
+    int pick = atoi(line);
+    if (pick < 1 || pick > n) return false;
+    snprintf(out, out_size, "%s", names[pick - 1]);
+    return true;
+}
+
+/* Settings [7]: picks the branch the client tracks. The branch is saved
+ * (BRANCH= in VERSION.txt, other fields kept) only after its VERSION.txt
+ * could be read, so a branch that can't be installed is never saved. The
+ * newest build on another branch is not always "newer" than what is
+ * installed, so it then offers to install that branch right away, which
+ * replaces the installed files with that branch's code. Declining keeps
+ * the choice and the next update check uses it. */
+static void do_settings_switch_branch(void) {
+    if (!g_local_version_loaded) {
+        g_local_version_loaded = read_local_version_file(&g_local_version_info);
+    }
+    if (!g_local_version_loaded) {
+        vfsc_err("No local %s found -- can't switch branches on a build from "
+                 "before this feature existed. Update once normally first.\n\n",
+                 VERSION_FILE_NAME);
+        return;
+    }
+
+    char new_branch[sizeof(branch_name_t)];
+    if (!ui_pick_branch("Switch branch", g_local_version_info.branch, new_branch, sizeof(new_branch))) {
+        printf("Branch unchanged.\n\n");
+        return;
+    }
+    if (strcmp(g_local_version_info.branch, new_branch) == 0) {
+        vfsc_ok("Already tracking \"%s\".\n\n", new_branch);
+        return;
+    }
+
+    client_version_info_t remote;
+    if (!fetch_remote_version_file(new_branch, &remote)) {
+        vfsc_warn("Couldn't read %s on \"%s\". That branch may not be installable, or GitHub "
+                  "is unreachable. Branch unchanged.\n\n", VERSION_FILE_NAME, new_branch);
+        return;
+    }
+
+    snprintf(g_local_version_info.branch, sizeof(g_local_version_info.branch), "%s", new_branch);
+    if (!write_local_version_file(&g_local_version_info)) {
+        vfsc_err("Failed to write %s: %s\n\n", VERSION_FILE_NAME, strerror(errno));
+        return;
+    }
+    vfsc_ok("Now tracking \"%s\".\n", new_branch);
+    printf("Latest on %s: v%s (%s). You have v%s (%s).\n", new_branch, remote.version, remote.build,
+           g_local_version_info.version, g_local_version_info.build);
+    printf("Install it now? This replaces the installed client with the %s code. [Y/N]: ", new_branch);
+    fflush(stdout);
+    char yn[16];
+    if (!fgets(yn, sizeof(yn), stdin) || (yn[0] != 'y' && yn[0] != 'Y')) {
+        printf("Not installing. Your next update check will use \"%s\".\n\n", new_branch);
+        return;
+    }
+    download_build_and_swap_update(new_branch, true, remote.version, remote.build);
+}
+
+/* ------------------------------------------------------------------ *
  * Settings [CM]: recent commits
  * ------------------------------------------------------------------ *
  * Asks which branch (active-development [A] or main [M]), then prints that
@@ -6962,18 +7243,13 @@ static const char *feed_extract_tag(const char *from, const char *open_tag,
 }
 
 static void do_settings_recent_commits(void) {
-    char line[64];
-    printf("Which branch?  Active-development [A] or main [M]: ");
-    fflush(stdout);
-    if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return; }
-
-    const char *branch = NULL;
-    if (line[0] == 'A' || line[0] == 'a') branch = "active-development";
-    else if (line[0] == 'M' || line[0] == 'm') branch = "main";
-    else {
-        vfsc_err("Please answer A (active-development) or M (main).\n\n");
+    char branch_buf[sizeof(branch_name_t)];
+    const char *current = g_local_version_loaded ? g_local_version_info.branch : "";
+    if (!ui_pick_branch("Show recent commits for which branch?", current, branch_buf, sizeof(branch_buf))) {
+        printf("Cancelled.\n\n");
         return;
     }
+    const char *branch = branch_buf;
 
     printf("\nFetching the last %d commits on \"%s\"...\n", COMMITS_SHOWN, branch);
     fflush(stdout);
@@ -8943,8 +9219,7 @@ int main(int argc, char **argv) {
     char line[64];
     for (;;) {
         print_menu();
-        printf("<Hack-touchid> ");
-        fflush(stdout);
+        ui_prompt("Choice");
 
         if (!read_menu_line(line, sizeof(line))) {
             printf("\n");
@@ -9074,7 +9349,7 @@ int main(int argc, char **argv) {
                 ran_action = false;
         }
         if (ran_action) {
-            clear_screen_and_redraw_banner();
+            clear_screen_and_redraw_header();
         }
     }
     return 0;
