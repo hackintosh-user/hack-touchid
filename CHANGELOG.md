@@ -3,6 +3,12 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
+## Unreleased | branch `egis-05a1`
+
+- New sensor, probe only: EGIS ETU905A80-E (`1c7a:05a1`, GitHub issue #15). `sudo hack-touchid --probe-egis --debug` finds the sensor, prints its USB descriptors, claims interface 0, sends the IN-direction start-up reads and four fixed query commands in the EGIS packet framing, and prints what came back. It never enrolls, verifies or wipes anything, never writes to the sensor, and only counts the enrolled prints instead of showing their identifiers. The result tells us whether this sensor speaks the same protocol as libfprint's egismoc driver or needs an SDCP step first. The sources are in their own LGPL 2.1 folder, `egis/`.
+- Build: new `egis` sensor family (libusb only). `./prep_and_build.sh --sensor egis` includes the probe, other builds print a "rebuild with" hint. The sensor is detected by the client, but Enroll, Verify and Deploy stay unavailable until the backend exists.
+
+---
 ## v2.0.2 | November 11th 2026
 
 - Version fix: the project version is now 2.0.2 everywhere it is shown (`VERSION.txt`, `vfs5011_proto.h` which the client and daemon are built with, the README and the website), so the client banner, About, Diagnose and the daemon check all agree. The banner also shows the branch the client tracks, next to the version and build.
