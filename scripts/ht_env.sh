@@ -18,7 +18,7 @@ HT_TOOL="$HT_ROOT/.ht_sensor_tool"
 # Where the headers live after the reorganization (see README, "Repository
 # layout"). Every compile uses these instead of one flat folder.
 # shellcheck disable=SC2034 # used by the scripts that source this file
-HT_INC="-I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Ivfs7552 -INBIS/include"
+HT_INC="-I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Ivfs7552 -Iegis -INBIS/include"
 
 # Package manager: Homebrew when brew is on PATH, otherwise MacPorts when its
 # port tool is found, otherwise none (the libraries may still be installed

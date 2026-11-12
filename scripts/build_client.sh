@@ -86,6 +86,15 @@ case ",$FAMILIES," in
         ;;
 esac
 
+# EGIS ETU905A80-E (1c7a:05a1): libusb-only read-only probe. Only compiled in
+# when that family is part of the build, like VFS7552 above.
+case ",$FAMILIES," in
+    *,egis,*)
+        SENSOR_SRC="$SENSOR_SRC egis/egis_probe.c"
+        CFLAGS="-DHT_WITH_EGIS $CFLAGS"
+        ;;
+esac
+
 # shellcheck disable=SC2086
 clang $CFLAGS \
     $COMMON_SRC $SENSOR_SRC \
