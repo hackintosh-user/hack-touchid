@@ -42,7 +42,7 @@
 #define HT_DEP_ALL (HT_DEP_LIBUSB | HT_DEP_OPENSSL | HT_DEP_INNOEXTRACT | HT_DEP_SEVENZIP)
 
 typedef struct {
-    const char *family;            /* build family: "vfs5011", "upek", "metallica" or "vfs7552" */
+    const char *family;            /* build family: "vfs5011", "upek", "metallica", "vfs7552" or "egis" */
     unsigned deps_build;           /* HT_DEP_* bits needed to compile and link this family */
     unsigned deps_runtime;         /* HT_DEP_* bits needed while the client/daemon runs */
     const char *display_name;      /* shown in the client, e.g. "VFS5011" */
@@ -194,6 +194,26 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
         .pid                  = 0x0092,
         .daemon_binary_name   = "vfs7552_daemon",
         .install_script_name  = "vfs7552/vfs7552_agent_install.sh",
+        .backend_available    = 0,
+    },
+    {
+        /* EGIS ETU905A80-E, 1c7a:05a1 (GitHub issue #15, reporter has a
+         * Samsung Galaxy Book3 Ultra). Match-on-chip: the sensor enrolls and
+         * matches by itself, like the Metallica MIS rows. libfprint's egismoc
+         * driver already lists this ID. Nov 2026: only the read-only probe
+         * exists (hack-touchid --probe-egis, see egis/); backend_available
+         * stays 0 until real hardware has confirmed enroll and verify. Newer
+         * EGIS firmware may enforce SDCP, which the probe cannot rule out on
+         * its own. No OpenSSL is linked yet, it joins deps_build if a
+         * handshake is ported. */
+        .family              = "egis",
+        .deps_build          = HT_DEP_LIBUSB,
+        .deps_runtime        = HT_DEP_LIBUSB,
+        .display_name        = "EGIS ETU905A80-E",
+        .vid                  = 0x1c7a,
+        .pid                  = 0x05a1,
+        .daemon_binary_name   = "egis_daemon",
+        .install_script_name  = "egis/egis_agent_install.sh",
         .backend_available    = 0,
     },
 };
