@@ -1255,41 +1255,6 @@ static void ui_section(const char *title) {
     putchar('\n');
 }
 
-/* The boxed title with version, build and branch on the right. */
-static void ui_header(void) {
-    if (!g_local_version_loaded) {
-        g_local_version_loaded = read_local_version_file(&g_local_version_info);
-    }
-    char right[160];
-    if (g_local_version_loaded && g_local_version_info.build[0] != '\0') {
-        snprintf(right, sizeof(right), "v%s %s %s %s %s", VFS5011_PROJECT_VERSION, UI_SEP,
-                 g_local_version_info.build, UI_SEP,
-                 g_local_version_info.branch[0] ? g_local_version_info.branch : "main");
-    } else {
-        snprintf(right, sizeof(right), "v%s", VFS5011_PROJECT_VERSION);
-    }
-    const int inner = UI_WIDTH - 2;
-    const char *title = "HACKINTOSH TOUCH-ID";
-    const char *sub = "Multi-sensor fingerprint auth for macOS";
-
-    printf("%s%s", VFSC_CYAN, UI_TL);
-    for (int i = 0; i < inner; i++) fputs(UI_H, stdout);
-    printf("%s%s\n", UI_TR, VFSC_RESET);
-
-    int used = 2 + 1 + 1 + ui_cols(title) + ui_cols(right) + 2;
-    printf("%s%s%s  %s%s%s %s%s%s", VFSC_CYAN, UI_V, VFSC_RESET, VFSC_BGREEN, UI_MARK, VFSC_RESET, VFSC_BOLD, title, VFSC_RESET);
-    ui_spaces(inner - used);
-    printf("%s%s  %s%s%s%s\n", VFSC_DIM, right, VFSC_RESET, VFSC_CYAN, UI_V, VFSC_RESET);
-
-    printf("%s%s%s    %s%s%s", VFSC_CYAN, UI_V, VFSC_RESET, VFSC_DIM, sub, VFSC_RESET);
-    ui_spaces(inner - 4 - ui_cols(sub));
-    printf("%s%s%s\n", VFSC_CYAN, UI_V, VFSC_RESET);
-
-    printf("%s%s", VFSC_CYAN, UI_BL);
-    for (int i = 0; i < inner; i++) fputs(UI_H, stdout);
-    printf("%s%s\n\n", UI_BR, VFSC_RESET);
-}
-
 /* One status line: state 1 = good (green dot), 0 = needs attention (yellow),
  * -1 = unknown (dim). The note is dim text after the value. */
 static void ui_status_row(int state, const char *label, const char *value, const char *note) {
@@ -1353,8 +1318,9 @@ static void print_banner(void) {
     printf("      `8,   `-..-'   ,8'\n");
     printf("       `8a,        ,a8'   %sMulti-Sensor Fingerprint Auth%s\n", VFSC_DIM, VFSC_CYAN);
     if (g_local_version_loaded && g_local_version_info.build[0] != '\0') {
-        printf("         `\"Y8888P\"'%s                              %sv%s (%s)%s\n",
-               VFSC_RESET, VFSC_DIM, VFS5011_PROJECT_VERSION, g_local_version_info.build, VFSC_RESET);
+        printf("         `\"Y8888P\"'%s                              %sv%s (%s) %s%s\n",
+               VFSC_RESET, VFSC_DIM, VFS5011_PROJECT_VERSION, g_local_version_info.build,
+               g_local_version_info.branch[0] ? g_local_version_info.branch : "main", VFSC_RESET);
     } else {
         printf("         `\"Y8888P\"'%s                              %sv%s%s\n",
                VFSC_RESET, VFSC_DIM, VFS5011_PROJECT_VERSION, VFSC_RESET);
@@ -1373,15 +1339,7 @@ static void clear_screen_and_redraw_banner(void) {
     printf("\033[2J\033[H");
     fflush(stdout);
     print_banner();
-}
-
-/* Same clear, but redraws the compact boxed header. Used when coming back to
- * the menu after an action, where the full logo is just noise. */
-static void clear_screen_and_redraw_header(void) {
-    if (!g_color_enabled) return;
-    printf("\033[2J\033[H");
-    fflush(stdout);
-    ui_header();
+    printf("\n");
 }
 
 /* Multi-finger storage: each enrolled finger gets its own file of
@@ -5636,7 +5594,8 @@ static void print_settings_menu(void) {
         g_local_version_loaded = read_local_version_file(&g_local_version_info);
     }
 
-    ui_header();
+    print_banner();
+    printf("\n");
 
     print_settings_group("FINGERPRINT & AUTHENTICATION");
     printf(" %s[1]%s Delete Fingerprint Templates\n", VFSC_BOLD, VFSC_RESET);
@@ -9349,7 +9308,7 @@ int main(int argc, char **argv) {
                 ran_action = false;
         }
         if (ran_action) {
-            clear_screen_and_redraw_header();
+            clear_screen_and_redraw_banner();
         }
     }
     return 0;
