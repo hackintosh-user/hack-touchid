@@ -82,6 +82,11 @@
 #include "vfs7552_probe.h"
 #include "vfs7552_firmware.h"
 #endif
+#ifdef HT_WITH_EGIS
+/* EGIS ETU905A80-E (1c7a:05a1): libusb-only read-only probe. Only compiled in
+ * when the build includes the egis family, see scripts/build_client.sh. */
+#include "egis_probe.h"
+#endif
 
 #define VFS5011_VID 0x138a
 #define VFS5011_PID 0x0018
@@ -800,6 +805,12 @@ static bool g_verify_test_mode = false;
  * Both survive the sudo re-exec. */
 static bool g_probe_7552_mode = false;
 static bool g_fetch_fw_7552_mode = false;
+
+/* Set by argv parsing in main() for the EGIS ETU905A80-E (1c7a:05a1) tester
+ * flag. --probe-egis: read-only USB probe (descriptors, start-up control reads
+ * and four query commands), nothing is written to the sensor. Survives the
+ * sudo re-exec. */
+static bool g_probe_egis_mode = false;
 
 /* Set by argv parsing in main() when "--check-updates" is passed.
  * Same headless-dispatch pattern as g_diag_pid_mode/g_deploy_agent_mode
@@ -2118,6 +2129,7 @@ static void print_usage(void) {
     printf("                      --enroll-test and exit (experimental, run with --debug)\n");
     printf("  --probe-7552        VFS7552 (138a:0092): read-only USB probe and exit (tester tool, run with --debug)\n");
     printf("  --fetch-fw-7552     VFS7552: download HP's SoftPaq, verify it and extract the firmware, then exit\n");
+    printf("  --probe-egis        EGIS ETU905A80-E (1c7a:05a1): read-only USB probe and exit (tester tool, run with --debug)\n");
     printf("  --cli               Skip the preference pane question and start the CLI client\n");
     printf("  --pane              Open the installed preference pane instead of the CLI client\n");
     printf("  --list-fingers      Print the enrolled prints as JSON and exit (used by the Settings pane)\n");
@@ -8769,6 +8781,20 @@ static int run_vfs7552_tools(void) {
 #endif
 }
 
+/* --probe-egis: EGIS ETU905A80-E (1c7a:05a1) tester tool. Returns the process
+ * exit code. In a build without the egis family it only tells the user how to
+ * rebuild. */
+static int run_egis_tools(void) {
+#ifdef HT_WITH_EGIS
+    return egis_probe_run(g_metallica_mis_debug);
+#else
+    vfsc_warn("This build has no EGIS support (it was built for a different sensor).\n");
+    vfsc_warn("Rebuild with:\n");
+    vfsc_warn("  ./prep_and_build.sh --sensor egis\n");
+    return 1;
+#endif
+}
+
 int main(int argc, char **argv) {
     /* Checked in its own pass, before anything else (including the
      * sudo re-exec below) -- seeing -h/--help should never require a
@@ -8846,6 +8872,10 @@ int main(int argc, char **argv) {
         }
         if (strcmp(argv[i], "--fetch-fw-7552") == 0) {
             g_fetch_fw_7552_mode = true;
+            g_verbose_boot = false;
+        }
+        if (strcmp(argv[i], "--probe-egis") == 0) {
+            g_probe_egis_mode = true;
             g_verbose_boot = false;
         }
         if (strcmp(argv[i], "--fpbootd-daemon") == 0) {
@@ -8931,6 +8961,7 @@ int main(int argc, char **argv) {
         if (g_verify_test_mode) sudo_argv[ai++] = "--verify-test";
         if (g_probe_7552_mode) sudo_argv[ai++] = "--probe-7552";
         if (g_fetch_fw_7552_mode) sudo_argv[ai++] = "--fetch-fw-7552";
+        if (g_probe_egis_mode) sudo_argv[ai++] = "--probe-egis";
         if (g_fpbootd_daemon_mode) sudo_argv[ai++] = "--fpbootd-daemon";
         if (g_fingers_cmd == HT_FINGERS_LIST) sudo_argv[ai++] = "--list-fingers";
         if (g_fingers_cmd == HT_FINGERS_RENAME) sudo_argv[ai++] = "--rename-finger";
@@ -9047,6 +9078,12 @@ int main(int argc, char **argv) {
      * daemon or any stored print, so they dispatch before everything else. */
     if (g_probe_7552_mode || g_fetch_fw_7552_mode) {
         return run_vfs7552_tools();
+    }
+
+    /* --probe-egis: EGIS tester tool, same reasoning as the VFS7552 tools
+     * above. */
+    if (g_probe_egis_mode) {
+        return run_egis_tools();
     }
 
     /* --enroll-test: headless Metallica MIS enrollment test, same
