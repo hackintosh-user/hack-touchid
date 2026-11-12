@@ -3,16 +3,17 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
-## v2.0.1 (26C008) | November 11th 2026
+## v2.0.2 | November 11th 2026
 
-- Small fixes
-- New overhauled client look and feel
-- custom branch switcher for beta testing.
-
-No bugs were reported in this build. 
+- Version fix: the project version is now 2.0.2 everywhere it is shown (`VERSION.txt`, `vfs5011_proto.h` which the client and daemon are built with, the README and the website), so the client banner, About, Diagnose and the daemon check all agree. The banner also shows the branch the client tracks, next to the version and build.
+- New menu layout: a status checklist with a dot per item (green is good, yellow needs attention) on top, then a two-column menu (Authenticate, Sensor Tools, System, Help and More). The logo stays at the top of every screen, at launch, after an action and in Settings. Settings uses the same style, and the prompts are now `Choice:` and `Settings:`. When the output is not a terminal, the dots and lines fall back to plain ASCII.
+- Settings `[7]` is now Switch Branch (it replaces Toggle Beta Updates). The branch list is fetched from GitHub each time (through `git ls-remote`, then the GitHub API, then just main and active-development as a fallback), so a new branch shows up without a client update. A branch is only saved if its `VERSION.txt` can be read, and the client offers to install it right away, since the newest build on another branch is not always newer than what you have.
+- `[CM]` Show Recent Commits uses the same branch picker, so you can see the last 5 commits on any branch.
+- After an update installs, the client now pins `BRANCH=` in `VERSION.txt` to the branch the update came from, so a branch that ships another branch's `VERSION.txt` can no longer move the client back to main.
+- README: the sensor table now lists ELAN `04f3:0c6e` (capture test on the `elan-0c6e` branch), EGIS `1c7a:05a1` (issue #15) and ELAN WBF `04f3:0c4c` (issue #16), and the credits thank @s17765152890-gif for the ELAN capture test.
 
 ---
-## v2.0.0 (26C007)| November 10th 2026
+## v2.0.0 | November 10th 2026
 
 - New sensor, fully supported: Prometheus 97 (`138a:0097`), confirmed working on a ThinkPad X1C5. Pairing, calibration, Enroll, Verify, lock screen unlock, padlock unlock and the Settings pane all work. It shares the Metallica MIS driver, so `[P]` Pair, `--enroll-test`, `--verify-test`, `--mmis-connect` and `--mmis-calibrate` apply to it too.
 - Fixed 0097 calibration failing with `average() failed for blank image`. The sensor starts streaming image lines as soon as the capture command is accepted, and the first lines were lost because the read was posted afterwards. The client now posts the read first and rebuilds the frames from the line counters, so a few missing lines no longer fail calibration. If calibration still fails, the raw capture is written to `/tmp/htid-calibrate-raw.bin` and `/tmp/htid-calibrate-info.txt` for diagnosis.
