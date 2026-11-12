@@ -52,7 +52,7 @@ jobs:
           cppcheck --force --enable=warning,performance,portability \
             --suppress=missingInclude \
             --error-exitcode=1 \
-            -I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Ivfs7552 -INBIS/include \
+            -I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Ivfs7552 -Iegis -INBIS/include \
             shared/access/ax_probe.c vfs5011/vfs5011_daemon.c hack_touchid_client.c \
             shared/sen/hack-touchid-matcher.c vfs5011/hack-touchid-menubar-ipc.c \
             metallica/metallica_mis_daemon.c metallica/metallica_mis_firmware.c \
@@ -63,7 +63,8 @@ jobs:
             metallica/mmis_factory_bits.c metallica/metallica_mis_debug.c \
             metallica/metallica_mis_db.c metallica/metallica_mis_enroll.c \
             metallica/metallica_mis_agent.c \
-            vfs7552/vfs7552_probe.c vfs7552/vfs7552_firmware.c
+            vfs7552/vfs7552_probe.c vfs7552/vfs7552_firmware.c \
+            egis/egis_probe.c
           # NOTE (Aug 2026): metallica_mis_tls.c/init_flash.c had been sitting in
           # the tree since Aug 19-20 without appearing in this list at all --
           # meaning cppcheck (and the build jobs below, which also don't
