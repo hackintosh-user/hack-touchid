@@ -22,6 +22,15 @@ The USB device revision is not assumed to identify the firmware version.
   driver detach or configuration reset is used.
 - Failed and short transfers fail the frame. No partial/stale frame is returned.
 
+Sending `00 0b` at both open and close is intentional. At open, after the
+size query succeeds, it establishes a stopped capture boundary before the
+first status/image poll. This follows the `CAPTURE_STOP` state in the
+elan-fp-fix driver referenced below and the sequence validated in our
+standalone M7400QC implementation. At close, the same command is best-effort
+cleanup before releasing interface 0, including error paths. The opening
+stop shares the bounded initialization deadline, and the closing transfer
+has a 250 ms timeout.
+
 Protocol references:
 
 - [filip-rs/libfprint elanpress](https://github.com/filip-rs/libfprint/tree/fa2f98fb8cb56e72d9e316cd86a987456b137893/libfprint/drivers),
@@ -72,9 +81,12 @@ power button. Watch the frame means change; this proves sensor response, not
 fingerprint matching or an authentication accuracy claim. Ctrl+C cancels with
 bounded USB waits, followed by cleanup. No biometric image is saved by default.
 
-For a local visual inspection only, --output frame.pgm writes the final frame
-as a 16-bit big-endian PGM with mode 0600. The file is created exclusively, so
-existing files and symlinks are never overwritten. It can contain biometric
+For local visual inspection, --output frame.pgm selects the frame with the
+largest max-minus-min sample spread and writes it as a 16-bit big-endian PGM
+with mode 0600. Equal spreads retain the earliest frame, and even a sequence
+of flat frames selects its first frame. The tool reports the selected frame
+number and spread after a successful export. The file is created exclusively,
+so existing files and symlinks are never overwritten. It can contain biometric
 data. Do not attach it to a public issue or commit it. The repository ignores
 PGM files as an additional guard.
 

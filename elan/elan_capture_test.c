@@ -16,7 +16,7 @@ static void usage(const char *name) {
     printf("Usage: %s [--probe | --frames N] [--output frame.pgm]\n"
            "Default: 120 frames (~10 seconds), statistics only.\n"
            "--probe queries dimensions without capturing images.\n"
-           "--output saves the final raw frame as a private 16-bit PGM.\n"
+           "--output saves the raw frame with the largest max-min spread as a private 16-bit PGM.\n"
            "No enrollment, matching, password access, or installation.\n", name);
 }
 static int write_all(int fd, const unsigned char *data, size_t len) {
@@ -73,8 +73,12 @@ int main(int argc, char **argv) {
     printf("ELAN 04f3:0c6e, %d x %d; capture-test-only\n", ELAN_WIDTH, ELAN_HEIGHT);
     if (probe) { elan_capture_close(d); return 0; }
     puts("Keep the pad clear initially, then touch and release it. Do not press the power button.");
-    if (output) puts("The final frame will be saved. It may contain biometric data; do not attach it to a public issue.");
-    uint16_t frame[ELAN_PIXELS] = {0}; unsigned completed = 0;
+    if (output) puts("The frame with the largest max-min spread will be saved. It may contain biometric data; do not attach it to a public issue.");
+    uint16_t frame[ELAN_PIXELS] = {0};
+    uint16_t best_frame[ELAN_PIXELS] = {0};
+    unsigned completed = 0;
+    unsigned best_frame_number = 0;
+    unsigned best_spread = 0;
     struct timespec pause = {0, 60000000};
     while (completed < frames && !stopped) {
         rc = elan_capture_frame(d, frame, ELAN_PIXELS, 2000);
@@ -84,6 +88,12 @@ int main(int argc, char **argv) {
             total += frame[j]; if (frame[j] < min) min = frame[j]; if (frame[j] > max) max = frame[j];
         }
         completed++;
+        unsigned spread = (unsigned)max - (unsigned)min;
+        if (output && (best_frame_number == 0 || spread > best_spread)) {
+            memcpy(best_frame, frame, sizeof(best_frame));
+            best_frame_number = completed;
+            best_spread = spread;
+        }
         if (completed == 1 || completed % 10 == 0 || completed == frames) {
             printf("frame=%u mean=%.1f min=%u max=%u\n", completed,
                    (double)total / ELAN_PIXELS, (unsigned)min, (unsigned)max);
@@ -92,10 +102,16 @@ int main(int argc, char **argv) {
         nanosleep(&pause, NULL);
     }
     elan_capture_close(d);
-    if (!rc && !stopped && completed == frames && output && save_pgm(output, frame) != 0) {
-        perror("Could not create output (existing files are not overwritten)"); rc = -1;
+    if (!rc && !stopped && completed == frames && output) {
+        if (save_pgm(output, best_frame) != 0) {
+            perror("Could not create output (existing files are not overwritten)");
+            rc = -1;
+        } else {
+            printf("Saved frame=%u spread=%u.\n", best_frame_number, best_spread);
+        }
     }
     printf("Captured %u/%u frames%s.\n", completed, frames, stopped ? " (cancelled)" : "");
     memset(frame, 0, sizeof(frame));
+    memset(best_frame, 0, sizeof(best_frame));
     return stopped ? 130 : (rc ? 1 : 0);
 }
