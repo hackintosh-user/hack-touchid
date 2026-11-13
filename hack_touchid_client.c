@@ -82,6 +82,11 @@
 #include "vfs7552_probe.h"
 #include "vfs7552_firmware.h"
 #endif
+#ifdef HT_WITH_ELANMOC2
+/* ELAN WBF (04f3:0c4c): libusb-only read-only probe. Only compiled in when
+ * the build includes the elanmoc2 family, see scripts/build_client.sh. */
+#include "elanmoc2_probe.h"
+#endif
 
 #define VFS5011_VID 0x138a
 #define VFS5011_PID 0x0018
@@ -800,6 +805,12 @@ static bool g_verify_test_mode = false;
  * Both survive the sudo re-exec. */
 static bool g_probe_7552_mode = false;
 static bool g_fetch_fw_7552_mode = false;
+
+/* Set by argv parsing in main() for the ELAN WBF (04f3:0c4c) tester flag.
+ * --probe-0c4c: read-only USB probe (descriptors, firmware version and the
+ * enrolled finger count), nothing is written to the sensor. Survives the
+ * sudo re-exec. */
+static bool g_probe_0c4c_mode = false;
 
 /* Set by argv parsing in main() when "--check-updates" is passed.
  * Same headless-dispatch pattern as g_diag_pid_mode/g_deploy_agent_mode
@@ -2118,6 +2129,7 @@ static void print_usage(void) {
     printf("                      --enroll-test and exit (experimental, run with --debug)\n");
     printf("  --probe-7552        VFS7552 (138a:0092): read-only USB probe and exit (tester tool, run with --debug)\n");
     printf("  --fetch-fw-7552     VFS7552: download HP's SoftPaq, verify it and extract the firmware, then exit\n");
+    printf("  --probe-0c4c        ELAN WBF (04f3:0c4c): read-only USB probe and exit (tester tool, run with --debug)\n");
     printf("  --cli               Skip the preference pane question and start the CLI client\n");
     printf("  --pane              Open the installed preference pane instead of the CLI client\n");
     printf("  --list-fingers      Print the enrolled prints as JSON and exit (used by the Settings pane)\n");
@@ -8964,6 +8976,20 @@ static int run_vfs7552_tools(void) {
 #endif
 }
 
+/* --probe-0c4c: ELAN WBF (04f3:0c4c) tester tool. Returns the process exit
+ * code. In a build without the elanmoc2 family it only tells the user how
+ * to rebuild. */
+static int run_elanmoc2_tools(void) {
+#ifdef HT_WITH_ELANMOC2
+    return elanmoc2_probe_run(g_metallica_mis_debug);
+#else
+    vfsc_warn("This build has no ELAN WBF support (it was built for a different sensor).\n");
+    vfsc_warn("Rebuild with:\n");
+    vfsc_warn("  ./prep_and_build.sh --sensor elanmoc2\n");
+    return 1;
+#endif
+}
+
 int main(int argc, char **argv) {
     /* Checked in its own pass, before anything else (including the
      * sudo re-exec below) -- seeing -h/--help should never require a
@@ -9047,6 +9073,10 @@ int main(int argc, char **argv) {
             g_fetch_fw_7552_mode = true;
             g_verbose_boot = false;
         }
+        if (strcmp(argv[i], "--probe-0c4c") == 0) {
+            g_probe_0c4c_mode = true;
+            g_verbose_boot = false;
+        }
         if (strcmp(argv[i], "--fpbootd-daemon") == 0) {
             g_fpbootd_daemon_mode = true;
         }
@@ -9110,7 +9140,7 @@ int main(int argc, char **argv) {
      * to however many flags actually apply. */
     if (geteuid() != 0) {
         vfsc_err("Root privileges are required to access the USB device — requesting via sudo...\n");
-        char *sudo_argv[32];
+        char *sudo_argv[40];
         int ai = 0;
         sudo_argv[ai++] = "sudo";
         sudo_argv[ai++] = argv[0];
@@ -9130,6 +9160,7 @@ int main(int argc, char **argv) {
         if (g_verify_test_mode) sudo_argv[ai++] = "--verify-test";
         if (g_probe_7552_mode) sudo_argv[ai++] = "--probe-7552";
         if (g_fetch_fw_7552_mode) sudo_argv[ai++] = "--fetch-fw-7552";
+        if (g_probe_0c4c_mode) sudo_argv[ai++] = "--probe-0c4c";
         if (g_fpbootd_daemon_mode) sudo_argv[ai++] = "--fpbootd-daemon";
         if (g_fingers_cmd == HT_FINGERS_LIST) sudo_argv[ai++] = "--list-fingers";
         if (g_fingers_cmd == HT_FINGERS_RENAME) sudo_argv[ai++] = "--rename-finger";
@@ -9246,6 +9277,12 @@ int main(int argc, char **argv) {
      * daemon or any stored print, so they dispatch before everything else. */
     if (g_probe_7552_mode || g_fetch_fw_7552_mode) {
         return run_vfs7552_tools();
+    }
+
+    /* --probe-0c4c: ELAN WBF tester tool, same reasoning as the VFS7552
+     * tools above. */
+    if (g_probe_0c4c_mode) {
+        return run_elanmoc2_tools();
     }
 
     /* --enroll-test: headless Metallica MIS enrollment test, same
