@@ -368,9 +368,15 @@ int egis_probe_run(int debug) {
             answered++;
             rc = 0;
             /* The print list: only count the 32 byte blocks (header 14 bytes,
-             * 2 byte trailer), never show them. */
+             * 2 byte trailer), never show them. Count only when the status
+             * word is 0x9000, otherwise show the status word instead. */
             if (i == PROBE_CMD_COUNT - 1) {
-                if (got >= 16 && (got - 16) % 32 == 0)
+                unsigned status = (got >= 2) ? (unsigned)((rsp[got - 2] << 8) | rsp[got - 1]) : 0;
+                if (got < 16)
+                    printf("  enrolled print count: reply too short (%d bytes), see the length above\n", got);
+                else if (status != 0x9000)
+                    printf("  enrolled print count: not counted, status word is 0x%04x instead of 0x9000 (%d bytes)\n", status, got);
+                else if ((got - 16) % 32 == 0)
                     printf("  enrolled prints on the sensor: %d\n", (got - 16) / 32);
                 else
                     printf("  enrolled print count: reply layout differs from the PoCs (%d bytes), see the length above\n", got);
