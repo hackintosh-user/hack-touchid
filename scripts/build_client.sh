@@ -86,6 +86,15 @@ case ",$FAMILIES," in
         ;;
 esac
 
+# ELAN WBF (04f3:0c4c): libusb-only read-only probe. Only compiled in when
+# that family is part of the build, like VFS7552 above.
+case ",$FAMILIES," in
+    *,elanmoc2,*)
+        SENSOR_SRC="$SENSOR_SRC elanmoc2/elanmoc2_probe.c"
+        CFLAGS="-DHT_WITH_ELANMOC2 $CFLAGS"
+        ;;
+esac
+
 # shellcheck disable=SC2086
 clang $CFLAGS \
     $COMMON_SRC $SENSOR_SRC \
