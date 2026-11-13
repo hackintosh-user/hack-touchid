@@ -47,7 +47,7 @@ This Table will have the currently Supported Sensors or sensors in **Development
 | Synaptics VFS7552      | 138A | 0092 | **Developing & actively Testing (thanks priyashgawande-commits!)**            | **Features in development**.     | 
 | ELAN                   | 04f3 | 0c6e | **Developing, capture-only test on the `elan-0c6e` branch (thanks @s17765152890-gif!)** | **Features in development**.     |
 | EGIS ETU905A80-E       | 1c7a | 05a1 | **Planned support** (requested in issue #15)                                  | **Planned.**                     |
-| ELAN WBF               | 04f3 | 0c4c | **Planned support** (requested in issue #16)                                  | **Planned.**                     |
+| ELAN WBF               | 04f3 | 0c4c | **Developing, read-only probe on the `elan-0c4c` branch** (issue #16)         | **Features in development**.     |
 
  * Please Keep in Mind that some sensor names are **too long to fit in the table** the VID:PID for each currently or planned sensor will be in the table and regardless the client itself checks if your sensor is supported.
  * Please also keep in mind that when you want to open a **Github Issue** that the sensor VID:PID is **Required**. I won't be able to help if you open an issue and say my sensor doesn't work.

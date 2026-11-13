@@ -3,6 +3,13 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
+## Unreleased | branch `elan-0c4c`
+
+- New sensor, probe only: ELAN WBF / ELAN:ARM-M4 (`04f3:0c4c`, GitHub issue #16). `sudo hack-touchid --probe-0c4c --debug` finds the sensor, prints its USB descriptors, claims interface 0 and sends two short read-only queries in the framing of the Linux elanmoc2 driver: the firmware version and the number of enrolled fingers. It never enrolls, verifies, deletes or wipes anything, never resets the device, and never reads the identifiers of enrolled fingers. The result tells us whether the sensor answers the same way on macOS as it does on Linux. The sources are in their own LGPL 2.1 folder, `elanmoc2/`.
+- Build: new `elanmoc2` sensor family (libusb only). `./prep_and_build.sh --sensor elanmoc2` includes the probe, other builds print a "rebuild with" hint. The sensor is detected by the client, but Enroll, Verify and Deploy stay unavailable until the backend exists.
+- Client: the argument list passed through the sudo re-exec now has room for 40 entries (it was 32, which was close to full).
+
+---
 ## v2.0.2 | November 11th 2026
 
 - Version fix: the project version is now 2.0.2 everywhere it is shown (`VERSION.txt`, `vfs5011_proto.h` which the client and daemon are built with, the README and the website), so the client banner, About, Diagnose and the daemon check all agree. The banner also shows the branch the client tracks, next to the version and build.
