@@ -4,6 +4,9 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef ELAN_FAKE_USB_ONLY
+#include <stdlib.h>
+#endif
 struct libusb_context { int unused; };
 struct libusb_device { int unused; };
 struct libusb_device_handle { int unused; };
@@ -59,6 +62,25 @@ int libusb_bulk_transfer(libusb_device_handle *h, unsigned char ep,
     case 5:
         assert(ep == 0x82 && n == ELAN_PIXELS * 2);
         for (int i = 0; i < ELAN_PIXELS; i++) { b[2*i] = i & 255; b[2*i+1] = i >> 8; }
+#ifdef ELAN_FAKE_USB_ONLY
+        static unsigned frame_number;
+        frame_number++;
+        const char *pattern = getenv("ELAN_TEST_FRAME_PATTERN");
+        if (pattern && strcmp(pattern, "spread") == 0) {
+            for (int i = 0; i < ELAN_PIXELS; i++) {
+                unsigned sample;
+                switch (frame_number) {
+                case 1: sample = 60000; break; /* High mean, zero spread. */
+                case 2: sample = i == 0 ? 50000 : 1000; break;
+                case 3: sample = i == 0 ? 30000 : 1000; break;
+                case 4: sample = 100; break; /* Empty-looking final frame. */
+                default: sample = i == 0 ? 50010 : 1010; break; /* Equal best spread. */
+                }
+                b[2*i] = (unsigned char)sample;
+                b[2*i+1] = (unsigned char)(sample >> 8);
+            }
+        }
+#endif
         phase = 2; break;
     default: assert(!"Unexpected USB sequence");
     }
