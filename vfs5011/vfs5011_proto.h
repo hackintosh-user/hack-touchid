@@ -5,7 +5,7 @@
  * vfs_client.c and vfs5011_daemon.c so the two can never silently
  * drift apart just because one binary got rebuilt/reinstalled and the
  * other didn't. Bump this exactly once per release. */
-#define VFS5011_PROJECT_VERSION "2.0.1"
+#define VFS5011_PROJECT_VERSION "2.0.2"
 
 #define VFS5011_LINE_SIZE 240
 #define VFS5011_IMAGE_WIDTH 160
