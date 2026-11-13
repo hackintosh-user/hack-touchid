@@ -23,30 +23,73 @@ chmod +x prep_and_build.sh
 <p>This produces the client and each sensor's daemon and support files.</p></section>
 <section id="run"><h2>2. Run the client</h2>
 <pre><code>sudo ./hack-touchid</code></pre>
-<p>On launch the client runs its startup checks, then clears the screen and draws the menu. If a check prints a warning or an error, the screen is not cleared so you can read it. Use <code>--q</code> or <code>--quiet</code> for the plain startup (banner first, no clearing). After the first launch the client adds itself to your <code>$PATH</code>, so from any new terminal you can just run:</p>
+<p>On launch the client runs its startup checks, then clears the screen and draws the menu. If a check prints a warning or an error, the screen is not cleared so you can read it. The HTID logo, with the version, build and branch next to it, stays at the top of every screen, including after an action and in Settings. Use <code>--q</code> or <code>--quiet</code> for the plain startup (banner first, no clearing). After the first launch the client adds itself to your <code>$PATH</code>, so from any new terminal you can just run:</p>
 <pre><code>sudo hack-touchid</code></pre></section>
 <section id="menu"><h2>3. Use the menu</h2>
-<pre><code>Actions
-[1] Enroll a Finger
-[2] Verify Fingerprint Match [Score / x ]
-[3] Deploy Authentication Services
-[C] View Fingerprint (capture preview, nothing saved)
-[P] (Metallica MIS and Prometheus 97 only) Pair
-[U] (UPEK 147e:2016 only) capture .pgm
-[B] Capture (experimental, Metallica MIS and Prometheus 97 only)
-[FP] Fpbootd, Pre-Login Auth (coming soon)
+<p>The menu has three parts: the logo and version line, a <b>Status</b> checklist, and the actions in two columns. Pick an action by typing its key at the <code>Choice:</code> prompt. In a plain terminal, or when the output is piped, the dots and lines fall back to ASCII.</p>
+<pre><code>STATUS ------------------------------------------------------
+&#9679; Sensor         Validity VFS5011 138a:0018  Ready
+&#9679; Service        Deployed
+&#9679; Volume         Configured
+&#9679; Accessibility  Granted
+&#9679; Password       Stored
+&#9679; Fingers        2 Enrolled (Right Index, Left Index)
 
-Utilities
-[D] Diagnose (generate a report for troubleshooting)
-[S] Settings
-[A] About
-[X] Uninstall
-[Q] Quit</code></pre>
+AUTHENTICATE                          SENSOR TOOLS
+[1] Enroll a Finger                   [C] View Fingerprint
+[2] Verify Fingerprint score/20       [T] Sensor Test
+[3] Deploy Authentication Services
+[FP] Fpbootd Pre-Login soon
+
+SYSTEM                                HELP AND MORE
+[S] Settings                          [D] Diagnose Report
+[I] Install Preference Pane           [A] About
+[M] Install / Repair Menu Bar App     [H] Help
+[X] Uninstall                         [Q] Quit
+
+Choice:</code></pre>
+<p><b>Status.</b> A green dot means the item is ready, a yellow dot means it needs attention, and a dim dot means unknown. The Password and Fingers rows are not live checks: they fill in after you run Enroll, Verify or Deploy once in the session.</p>
+<p><b>Sensor tools</b> depend on the sensor that was detected:</p>
+<ul>
+<li>Validity VFS5011 and UPEK: <code>[C]</code> View Fingerprint (capture preview, nothing saved) and <code>[T]</code> Sensor Test. UPEK also gets <code>[U]</code> Test Capture, which saves a <code>.pgm</code> image.</li>
+<li>Metallica MIS and Prometheus 97: <code>[P]</code> Pair Sensor, <code>[B]</code> Calibrate Sensor and <code>[N]</code> Rename a Print. All three are marked experimental. Pairing normally happens by itself inside Enroll.</li>
+<li>No sensor found: the column shows <code>No sensor tools</code>.</li></ul>
 <ol class="steps">
 <li><b>Enroll a finger [1].</b> Captures several swipes and stores them as a named template on the encrypted volume. Repeat for as many fingers as you like. Verification uses best match wins.</li>
-<li><b>Verify [2].</b> A standalone test of capture and matching, independent of the daemon. Use it to confirm everything works before deploying.</li>
+<li><b>Verify [2].</b> A standalone test of capture and matching, independent of the daemon. The score is shown against your match threshold (the <code>score/20</code> note). Use it to confirm everything works before deploying.</li>
 <li><b>Deploy [3].</b> Rebuilds the daemon, installs it as a per-user LaunchAgent, re-signs it, regenerates its Accessibility grant, and installs a narrowly scoped sudoers rule so it can reach the USB device. Re-run on every deploy so the daemon is never stale.</li></ol>
-<p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for your fingerprint and, on a match, types the stored password.</p></section>
+<p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for your fingerprint and, on a match, types the stored password. <code>[FP]</code> Fpbootd Pre-Login is a placeholder that does nothing yet, see <a href="#fpbootd">Fpbootd</a>.</p>
+<h3>Settings [S]</h3>
+<p>Settings has its own screen with the same logo and style, grouped by topic, and its own <code>Settings:</code> prompt. <code>[B]</code> goes back to the main menu.</p>
+<pre><code>FINGERPRINT &amp; AUTHENTICATION
+[1] Delete Fingerprint Templates
+[2] Clear Password Cache
+[3] Set/Update Auto-Type Password
+[6] Adjust Match Threshold (current: 20)
+
+STORAGE &amp; SYSTEM INTEGRATION
+[4] Set Up / Repair Template Volume
+[5] Grant/Verify Accessibility Permission
+[8] Link to a Different Volume / Check for Orphans
+[9] Set Up FPOV (Multi-OS Version Check, dual/triple boot)
+
+SWIPE TO LOCK
+[L] Swipe to Lock Sensitivity
+
+SENSOR LED (VFS5011 only)
+[LED] Sensor LED Settings
+
+UPDATES &amp; NOTIFICATIONS
+[7] Switch Branch (current: main)
+[U] Toggle Live Update Notifications (current: ON)
+[CU] Check for Updates Now
+[CM] Show Recent Commits (last 5 on a branch)
+
+[B] Back</code></pre>
+<ul>
+<li><b>Switch Branch [7].</b> The branch list is fetched live from GitHub. If GitHub cannot be reached it falls back to <code>main</code> and <code>active-development</code>. A branch is only saved if its <code>VERSION.txt</code> can be read, and the client then offers to install it. After an update installs, the branch it came from is pinned in <code>VERSION.txt</code>, so the next update check follows the same branch.</li>
+<li><b>Show Recent Commits [CM].</b> Uses the same branch picker and prints the last 5 commits on the branch you choose.</li>
+<li>Match Threshold, Swipe to Lock Sensitivity and the Sensor LED group are for VFS5011. The LED group only appears when a VFS5011 is detected.</li></ul></section>
 <section id="sensors"><h2>Sensor guides</h2>
 <p>Pick your sensor, open its guide and follow it from top to bottom. You can find your sensor's VID:PID in System Information, USB. Steps marked <b>(automatic)</b> happen on their own; they are listed so you know what the client is doing. Every guide ends the same way: deploy the daemon, then optionally install the menu bar app and the Settings pane.</p>
 
@@ -101,6 +144,8 @@ Utilities
 <tr><td><code>--wipe-records</code></td><td>Delete all enrolled prints stored on the sensor. Destructive, cannot be undone.</td></tr>
 <tr><td><code>--enroll-test</code></td><td>Metallica MIS and Prometheus 97 only. Calibrate, enroll one finger on the sensor and exit. Tester tool, run it with <code>--debug</code>.</td></tr>
 <tr><td><code>--verify-test</code></td><td>Metallica MIS and Prometheus 97 only. Calibrate, touch once, match against the print saved by <code>--enroll-test</code> and exit. Run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--probe-7552</code></td><td>VFS7552 (<code>138a:0092</code>) only. Read-only USB probe, then exit. Nothing is written to the sensor. Tester tool, run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--fetch-fw-7552</code></td><td>VFS7552 only. Download HP's SoftPaq, verify it, extract the firmware and exit. Needs 7-Zip.</td></tr>
 <tr><td><code>--force-pair</code></td><td>Experimental. Try to pair the sensor by writing its identity partitions. A sensor that is already paired refuses this (error <code>0x0404</code>), so use the two host flags below instead.</td></tr>
 <tr><td><code>--host-product "&lt;name&gt;"</code></td><td>Override the product name used to derive the pairing key. Use the laptop's real value, not the spoofed Mac one. Use with <code>--host-serial</code>. Applies to this run only.</td></tr>
 <tr><td><code>--host-serial "&lt;serial&gt;"</code></td><td>Override the serial used to derive the pairing key. Use the laptop's real value. Use with <code>--host-product</code>. Applies to this run only.</td></tr>
