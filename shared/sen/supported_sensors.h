@@ -42,7 +42,7 @@
 #define HT_DEP_ALL (HT_DEP_LIBUSB | HT_DEP_OPENSSL | HT_DEP_INNOEXTRACT | HT_DEP_SEVENZIP)
 
 typedef struct {
-    const char *family;            /* build family: "vfs5011", "upek", "metallica" or "vfs7552" */
+    const char *family;            /* build family: "vfs5011", "upek", "metallica", "vfs7552" or "elanmoc2" */
     unsigned deps_build;           /* HT_DEP_* bits needed to compile and link this family */
     unsigned deps_runtime;         /* HT_DEP_* bits needed while the client/daemon runs */
     const char *display_name;      /* shown in the client, e.g. "VFS5011" */
@@ -194,6 +194,25 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
         .pid                  = 0x0092,
         .daemon_binary_name   = "vfs7552_daemon",
         .install_script_name  = "vfs7552/vfs7552_agent_install.sh",
+        .backend_available    = 0,
+    },
+    {
+        /* ELAN WBF / ELAN:ARM-M4, 04f3:0c4c (GitHub issue #16, reporter has
+         * an HP ENVY x360 15-ed0xxx). Match-on-chip: the sensor enrolls and
+         * matches by itself. The Linux elanmoc2 driver (Davide Depau) already
+         * drives it, and the reporter enrolled and verified with it on
+         * Ubuntu. Not the same sensor as the ELAN 04f3:0c6e image sensor.
+         * Nov 2026: only the read-only probe exists (hack-touchid
+         * --probe-0c4c, see elanmoc2/); backend_available stays 0 until real
+         * hardware has confirmed enroll and verify on macOS. */
+        .family              = "elanmoc2",
+        .deps_build          = HT_DEP_LIBUSB,
+        .deps_runtime        = HT_DEP_LIBUSB,
+        .display_name        = "ELAN WBF",
+        .vid                  = 0x04f3,
+        .pid                  = 0x0c4c,
+        .daemon_binary_name   = "elanmoc2_daemon",
+        .install_script_name  = "elanmoc2/elanmoc2_agent_install.sh",
         .backend_available    = 0,
     },
 };
