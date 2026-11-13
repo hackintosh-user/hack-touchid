@@ -5987,6 +5987,27 @@ static void ensure_pane_installed(void) {
     (void)do_install_pane();
 }
 
+/* Optional: offer the System Settings preference pane. Only when a person is at a terminal (not
+ * for the menu bar updater / headless runs, which set HTID_NO_PAUSE) and the pre-compiled bundle
+ * is present. Shared by do_deploy() and the progress bar Deploy. */
+static void offer_preference_pane(void) {
+    char pane_src[PATH_MAX];
+    if (getenv("HTID_NO_PAUSE") == NULL && isatty(STDIN_FILENO) &&
+        pane_bundle_path(pane_src, sizeof(pane_src))) {
+        printf("Hackintosh TouchID has a custom Preference pane for ease of access directly\n"
+               "built into System Settings. Would you like to install this package? [Y / N] ");
+        fflush(stdout);
+        char pane_answer[16] = {0};
+        if (fgets(pane_answer, sizeof(pane_answer), stdin) &&
+            (pane_answer[0] == 'y' || pane_answer[0] == 'Y')) {
+            printf("\n");
+            do_install_pane();
+        } else {
+            printf("Skipped. You can install it later with [I] in the main menu.\n\n");
+        }
+    }
+}
+
 /* Deploy installs/reinstalls hack-touchid-agent-install.sh, which handles
  * everything: rebuilding the daemon from source, copying it into
  * place, tearing down any prior registration, the scoped NOPASSWD
@@ -6128,26 +6149,7 @@ static bool do_deploy(void) {
         }
     }
 
-    /* Optional: offer the System Settings preference pane. Only when a person
-     * is at a terminal (not for the menu bar updater / headless runs) and the
-     * pre-compiled bundle is present. */
-    {
-        char pane_src[PATH_MAX];
-        if (getenv("HTID_NO_PAUSE") == NULL && isatty(STDIN_FILENO) &&
-            pane_bundle_path(pane_src, sizeof(pane_src))) {
-            printf("Hackintosh TouchID has a custom Preference pane for ease of access directly\n"
-                   "built into System Settings. Would you like to install this package? [Y / N] ");
-            fflush(stdout);
-            char pane_answer[16] = {0};
-            if (fgets(pane_answer, sizeof(pane_answer), stdin) &&
-                (pane_answer[0] == 'y' || pane_answer[0] == 'Y')) {
-                printf("\n");
-                do_install_pane();
-            } else {
-                printf("Skipped. You can install it later with [I] in the main menu.\n\n");
-            }
-        }
-    }
+    offer_preference_pane();
 
     printf("Lock your screen and swipe an enrolled finger to test it.\n\n");
     return true;
@@ -7413,6 +7415,199 @@ static bool redeploy_daemon_with_new_client(void) {
         return false;
     }
     draw_progress_bar(100, UPDATE_DEPLOY_LABEL);
+    return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * [3] Deploy with a progress bar
+ * ------------------------------------------------------------------ *
+ * The interactive Deploy used to print about a dozen lines. This runs the same deploy as a child
+ * (hack-touchid --deploy-agent, exactly what the updater runs), follows its output line by line,
+ * and shows it as the updater's single bar: what it is doing on the left, the bar, the percentage
+ * and a turning - \ | / on the right. The child's full output is kept in DEPLOY_BAR_LOG. A
+ * question the child asks (the login password has no newline) is passed through to the terminal
+ * and the bar comes back after the answer. Warnings in the output are listed under the finished
+ * bar. The classic line-by-line Deploy is still used when stdout is not a terminal, with --debug,
+ * on a first run (the template volume is set up with prompts), or with HTID_NO_BAR=1. */
+#define DEPLOY_BAR_LOG "/tmp/htid-deploy.log"
+#define DEPLOY_BAR_LABEL_W 38
+
+/* What the deploy is busy with after this line of output. Some lines (Building..., Registering...)
+ * are only printed once the install script has finished, so the label names the step that comes
+ * next, the one the spinner is turning for. NULL for a line that does not change it. */
+static const char *deploy_line_label(const char *line) {
+    static const struct { const char *needle; const char *label; } steps[] = {
+        { "detected: continue", "Checking the sensor" },
+        { "detected. continuing", "Preparing to deploy" },
+        { "Deploying Authentication Service", "Building and registering the service" },
+        { "Service deployed successfully", "Checking Accessibility permission" },
+        { "Accessibility permission", "Unlocking the template volume" },
+        { "Unlocking any cryptographic", "Checking the login password" },
+        { "Login password", "Installing the menu bar app" },
+        { "Menu bar app version", "Finishing up" },
+        { "Lock your screen", "Finishing up" },
+    };
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+        if (strstr(line, steps[i].needle)) return steps[i].label;
+    }
+    return NULL;
+}
+
+static void deploy_bar_draw(int percent, const char *label) {
+    char padded[96];
+    snprintf(padded, sizeof(padded), "%-*s", DEPLOY_BAR_LABEL_W, label);
+    draw_progress_bar(percent, padded);
+}
+
+/* Leaves the finished bar on screen (unlike upbar_clear) and moves to the next line. */
+static void upbar_finish(void) {
+    pthread_mutex_lock(&g_upbar_lock);
+    if (g_upbar_on) {
+        upbar_render_locked();
+        printf("\n");
+        fflush(stdout);
+        g_upbar_on = false;
+    }
+    pthread_mutex_unlock(&g_upbar_lock);
+}
+
+/* Prints the warning messages found in the deploy log. A message is its first line plus the lines
+ * after it up to the next blank line. Returns how many were printed. */
+static int deploy_log_print_warnings(void) {
+    static const char *needles[] = { "NOT detected", "No login password", "Could not", "failed",
+                                     "skipped", "not found", "Warning" };
+    FILE *f = fopen(DEPLOY_BAR_LOG, "r");
+    if (!f) return 0;
+    char line[512];
+    int shown = 0;
+    bool in_msg = false;
+    while (fgets(line, sizeof(line), f)) {
+        bool blank = (line[0] == '\n' || line[0] == '\r' || line[0] == '\0');
+        if (in_msg) {
+            if (blank) { in_msg = false; continue; }
+            printf("%s  %s%s", VFSC_YELLOW, line, VFSC_RESET);
+            continue;
+        }
+        if (blank) continue;
+        for (size_t i = 0; i < sizeof(needles) / sizeof(needles[0]); i++) {
+            if (strstr(line, needles[i])) {
+                printf("%s  %s%s", VFSC_YELLOW, line, VFSC_RESET);
+                in_msg = true;
+                shown++;
+                break;
+            }
+        }
+    }
+    fclose(f);
+    return shown;
+}
+
+static bool deploy_bar_usable(void) {
+    return isatty(STDOUT_FILENO) && isatty(STDIN_FILENO) && g_detected_sensor &&
+           g_metallica_mis_debug < 1 && getenv("HTID_NO_BAR") == NULL && is_volume_configured();
+}
+
+static bool do_deploy_with_bar(void) {
+    char cmd[PATH_MAX + 96];
+    snprintf(cmd, sizeof(cmd), "HTID_NO_PAUSE=1 \"%s/hack-touchid\" --deploy-agent 2>&1", g_exec_dir);
+    char label[96];
+    snprintf(label, sizeof(label), "Starting the deploy");
+    int pct = 0;
+    deploy_bar_draw(pct, label);
+    fflush(stdout);
+    FILE *dp = popen(cmd, "r");
+    if (!dp) {
+        upbar_clear();
+        vfsc_err("Could not start the deploy. Run: sudo hack-touchid --deploy-agent\n\n");
+        return false;
+    }
+    FILE *lg = fopen(DEPLOY_BAR_LOG, "w");
+    int fd = fileno(dp);
+    char acc[1024];
+    size_t acc_len = 0;
+    bool raw = false, complete = false, building = false;
+
+    for (;;) {
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(fd, &rf);
+        struct timeval tv = { 0, 700000 };
+        int sr = select(fd + 1, &rf, NULL, NULL, &tv);
+        if (sr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (sr == 0) {
+            if (acc_len > 0 && !raw) {
+                /* Output without a newline for a while is a prompt: show it. */
+                upbar_clear();
+                fwrite(acc, 1, acc_len, stdout);
+                fflush(stdout);
+                raw = true;
+                acc_len = 0;
+            } else if (building && !raw && pct < 38) {
+                /* The install script is silent while it builds: creep forward so the bar moves. */
+                pct++;
+                deploy_bar_draw(pct, label);
+            }
+            continue;
+        }
+        char chunk[512];
+        ssize_t n = read(fd, chunk, sizeof(chunk));
+        if (n <= 0) break;
+        if (lg) { fwrite(chunk, 1, (size_t)n, lg); fflush(lg); }
+
+        for (ssize_t i = 0; i < n; i++) {
+            char c = chunk[i];
+            if (raw) {
+                putchar(c);
+                if (c == '\n') {
+                    raw = false;
+                    fflush(stdout);
+                    deploy_bar_draw(pct, label);
+                }
+                continue;
+            }
+            if (c != '\n' && acc_len < sizeof(acc) - 1) {
+                if (c != '\r') acc[acc_len++] = c;
+                continue;
+            }
+            acc[acc_len] = '\0';
+            acc_len = 0;
+            int step = deploy_line_percent(acc);
+            const char *next = deploy_line_label(acc);
+            if (next) snprintf(label, sizeof(label), "%s", next);
+            if (strstr(acc, "Deploying Authentication Service")) building = true;
+            if (strstr(acc, "Service deployed successfully")) building = false;
+            if (strstr(acc, "(re)install complete")) complete = true;
+            if (step > pct) pct = step;
+            else if (step < 0 && pct < 95) pct++;
+            deploy_bar_draw(pct, label);
+        }
+        if (raw) fflush(stdout);
+    }
+    int rc = pclose(dp);
+    if (lg) fclose(lg);
+
+    if (rc != 0 || !complete) {
+        upbar_clear();
+        vfsc_err("Service deployment failed.\n");
+        printf("  Deploy output kept in %s, last lines:\n", DEPLOY_BAR_LOG);
+        char tail_cmd[128];
+        snprintf(tail_cmd, sizeof(tail_cmd), "tail -n 15 %s 2>/dev/null | sed 's/^/    /'", DEPLOY_BAR_LOG);
+        fflush(stdout);
+        system(tail_cmd);
+        printf("\n");
+        return false;
+    }
+
+    deploy_bar_draw(100, "Deploy complete");
+    upbar_finish();
+    int warned = deploy_log_print_warnings();
+    if (warned > 0) printf("%s  Full deploy output: %s%s\n", VFSC_DIM, DEPLOY_BAR_LOG, VFSC_RESET);
+    printf("\n");
+    offer_preference_pane();
+    printf("Lock your screen and swipe an enrolled finger to test it.\n\n");
     return true;
 }
 
@@ -8796,6 +8991,10 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--pane") == 0) g_force_pane_mode = true;
         if (strcmp(argv[i], "--deploy-agent") == 0) {
             g_deploy_agent_mode = true;
+            /* Into a pipe stdout is block buffered, so a parent following the output line by
+             * line (the Deploy progress bar, the updater) would only see it at the very end. No
+             * output has been written yet, so this is still allowed. */
+            setvbuf(stdout, NULL, _IOLBF, 0);
         }
         if (strcmp(argv[i], "--diag-pid") == 0) {
             g_diag_pid_mode = true;
@@ -9202,7 +9401,10 @@ int main(int argc, char **argv) {
         switch (cmd) {
             case '1': sensor_yield_begin(); do_enroll(); sensor_yield_end(); break;
             case '2': sensor_yield_begin(); do_verify(); sensor_yield_end(); break;
-            case '3': do_deploy(); break;
+            case '3':
+                if (deploy_bar_usable()) do_deploy_with_bar();
+                else do_deploy();
+                break;
             case 'P': case 'p':
                 if (is_metallica_mis_sensor(g_detected_sensor)) {
                     do_pair_metallica_mis();
