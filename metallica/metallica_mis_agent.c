@@ -204,11 +204,13 @@ static atomic_int g_running = 1;
 /* Sleep / wake handling. The sensor loses power or re-enumerates over sleep, so a session opened
  * before it is dead afterwards. The power callback (main thread) only sets flags; the polling
  * thread, which owns the session, closes it and waits for the USB bus to settle before reopening. */
-#define WAKE_SETTLE_MS 2500
+#define WAKE_SETTLE_MS 2500      /* ceiling: after this the sensor is opened no matter what */
+#define WAKE_SETTLE_MIN_MS 1000  /* floor: never open earlier than this, even if the sensor is already on the bus */
 static atomic_bool g_sleeping = false;       /* between WillSleep and HasPoweredOn */
 static atomic_bool g_session_flush = false;  /* polling thread: drop the open session now */
 static atomic_bool g_session_held = false;   /* polling thread: a sensor session is open */
-static atomic_llong g_wake_settle_until = 0; /* monotonic ms: do not open the sensor before this */
+static atomic_llong g_wake_settle_until = 0; /* monotonic ms: open the sensor by this time at the latest */
+static atomic_llong g_wake_floor_until = 0;  /* monotonic ms: do not open the sensor before this */
 
 /* Auth triggers, same as the VFS5011 daemon: the lock screen, or a
  * SecurityAgent / System Settings padlock with a secure text field. */
@@ -1229,6 +1231,24 @@ static void handle_no_match(void) {
     }
 }
 
+/* True once the sensor may be opened after a wake. Normally that is when the
+ * full settle time (WAKE_SETTLE_MS) has passed, exactly as before. If the
+ * sensor is already back on the USB bus, the wait ends early, but never before
+ * WAKE_SETTLE_MIN_MS. If it does not come back, nothing changes: the full wait
+ * applies. An early open that fails goes through the normal retry path. Outside
+ * a wake both timestamps are in the past, so this returns true right away
+ * without touching USB. */
+static bool wake_settled(void) {
+    long long now = monotonic_ms();
+    if (now >= atomic_load(&g_wake_settle_until)) return true;
+    if (now < atomic_load(&g_wake_floor_until)) return false;
+    if (!metallica_mis_sensor_is_present()) return false;
+    atomic_store(&g_wake_settle_until, now);
+    print_timestamp();
+    printf("Sensor is back on the USB bus, opening a session without waiting out the full settle time.\n");
+    return true;
+}
+
 static void *polling_thread_main(void *arg) {
     (void)arg;
     bool session_open = false;
@@ -1252,7 +1272,7 @@ static void *polling_thread_main(void *arg) {
 
         int st = atomic_load(&g_state);
         bool want_session = (st == STATE_POLLING || st == STATE_LOCK_ARMED) && !yield_is_active()
-                            && !atomic_load(&g_sleeping) && monotonic_ms() >= atomic_load(&g_wake_settle_until);
+                            && !atomic_load(&g_sleeping) && wake_settled();
         if (!want_session) {
             if (session_open) { metallica_mis_agent_close(); session_open = false; atomic_store(&g_session_held, false); }
             open_failures = 0;
@@ -1379,10 +1399,15 @@ static void power_callback(void *refcon, io_service_t service, natural_t msg, vo
         break;
     case kIOMessageSystemHasPoweredOn:
         atomic_store(&g_session_flush, true);
-        atomic_store(&g_wake_settle_until, monotonic_ms() + WAKE_SETTLE_MS);
+        {
+            long long woke_at = monotonic_ms();
+            atomic_store(&g_wake_floor_until, woke_at + WAKE_SETTLE_MIN_MS);
+            atomic_store(&g_wake_settle_until, woke_at + WAKE_SETTLE_MS);
+        }
         atomic_store(&g_sleeping, false);
         print_timestamp();
-        printf("System woke up -> waiting %d ms for the sensor to come back before opening a session.\n", WAKE_SETTLE_MS);
+        printf("System woke up -> waiting %d to %d ms for the sensor to come back before opening a session.\n",
+               WAKE_SETTLE_MIN_MS, WAKE_SETTLE_MS);
         break;
     default:
         break;
