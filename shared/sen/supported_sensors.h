@@ -86,7 +86,14 @@ static const hack_touchid_sensor_t HACK_TOUCHID_SENSORS[] = {
          * sensor exactly as before -- until that real-hardware pass via
          * [U] actually happens and looks good, same policy as Metallica
          * MIS below. install_script_name is still a placeholder; no
-         * installer exists until backend_available flips. */
+         * installer exists until backend_available flips.
+         * Nov 14: the real-hardware pass happened (capture works, 144x384
+         * image, 41 minutiae) and Enroll [1] and Verify [2] are now open
+         * for this sensor through sensor_can_enroll_verify() in
+         * hack_touchid_client.c, which accepts it even with
+         * backend_available 0. The flag stays 0 because Deploy [3] and
+         * the Fpbootd daemon also read it and UPEK has no daemon or
+         * installer yet. */
         .family              = "upek",
         .deps_build          = HT_DEP_LIBUSB,
         .deps_runtime        = HT_DEP_LIBUSB,
