@@ -465,6 +465,18 @@ static int is_upek_sensor(const hack_touchid_sensor_t *s) {
     return s && s->vid == UPEK_VID && s->pid == UPEK_PID;
 }
 
+/* True when Enroll [1] and Verify [2] can run on the swipe-image path
+ * (capture, minutiae, template volume). That is every sensor with
+ * backend_available set, plus UPEK: its capture is confirmed on real
+ * hardware (144x384 image, 41 minutiae), so Enroll and Verify are open for
+ * it. backend_available stays 0 for UPEK on purpose, because Deploy [3]
+ * and the Fpbootd daemon also read it and UPEK has no daemon or installer
+ * yet. Metallica MIS is not covered here, it has its own match-in-sensor
+ * path and its callers check for it first. */
+static int sensor_can_enroll_verify(const hack_touchid_sensor_t *s) {
+    return s && (s->backend_available || is_upek_sensor(s));
+}
+
 /* Image width varies by sensor; height is always however many rows
  * that sensor's capture produced this swipe. vfs5011_extract_template()
  * (despite its name) is genuinely sensor-generic -- any width*height
@@ -2691,7 +2703,7 @@ static void print_about(void) {
     printf("\n%sHACK-TOUCHID CLIENT%s\n", VFSC_BCYAN, VFSC_RESET);
     printf("Multi-sensor fingerprint authentication for macOS Sonoma+.\n");
     printf("Currently supported: Validity VFS5011 (capture backend live);\n");
-    printf("UPEK/AuthenTec TouchStrip (detection only, capture backend pending).\n");
+    printf("UPEK/AuthenTec TouchStrip (Enroll and Verify; Deploy is not available yet).\n");
     printf("Capture pipelines ported from libfprint; matching via NBIS mindtct/bozorth3.\n");
     printf("%sMATCH_THRESHOLD=%d, ENROLL_SWIPES=%d, MIN_SELF_CONSISTENCY=%d%s\n\n",
            VFSC_DIM, g_match_threshold, ENROLL_SWIPES, MIN_SELF_CONSISTENCY, VFSC_RESET);
@@ -4113,7 +4125,7 @@ static void do_view_fingerprint(void) {
                   g_detected_sensor->display_name);
         return;
     }
-    if (!g_detected_sensor->backend_available) {
+    if (!sensor_can_enroll_verify(g_detected_sensor)) {
         vfsc_warn("%s's capture backend isn't confirmed working on real "
                    "hardware yet, but trying anyway -- this is just a "
                    "preview, nothing gets saved to enrolled-finger storage.\n\n",
@@ -4167,7 +4179,7 @@ static void do_enroll(void) {
         return;
     }
     printf("Declaring sensor type...\n");
-    if (!g_detected_sensor->backend_available && !is_metallica_mis_sensor(g_detected_sensor)) {
+    if (!sensor_can_enroll_verify(g_detected_sensor) && !is_metallica_mis_sensor(g_detected_sensor)) {
         vfsc_warn("%s %04x:%04x detected, but it only supports the capture test for now.\n"
                   "Enrollment isn't available for this sensor yet.\n\n",
                   g_detected_sensor->display_name, g_detected_sensor->vid, g_detected_sensor->pid);
@@ -4353,7 +4365,7 @@ static void do_enroll(void) {
  * always filled in; on 1 they're not meaningful. */
 static int verify_once(char *out_label, size_t out_label_size, int *out_score, int quiet) {
     if (!g_detected_sensor) return 1;
-    if (!g_detected_sensor->backend_available) return 1;
+    if (!sensor_can_enroll_verify(g_detected_sensor)) return 1;
 
     struct xyt_struct probe;
     if (capture_quality_template(&probe, quiet) != 0) return 1;
@@ -4415,7 +4427,7 @@ static int do_verify(void) {
         do_verify_metallica();
         return 0;
     }
-    if (!g_detected_sensor->backend_available) {
+    if (!sensor_can_enroll_verify(g_detected_sensor)) {
         vfsc_err("%s detected, but its capture backend isn't implemented yet.\n\n",
                   g_detected_sensor->display_name);
         return 1;
@@ -6051,6 +6063,12 @@ static bool do_deploy(void) {
     /* Detected, but that sensor's capture backend isn't built yet
      * (backend_available == 0 in the table) -- e.g. UPEK is
      * recognized on sight but has no daemon/installer to deploy. */
+    if (is_upek_sensor(g_detected_sensor) && !g_detected_sensor->backend_available) {
+        vfsc_err("%s: Enroll [1] and Verify [2] work with this sensor, but Deploy\n"
+                  "(the lock screen service) isn't available for it yet.\n\n",
+                  g_detected_sensor->display_name);
+        return false;
+    }
     if (!g_detected_sensor->backend_available && !metallica_agent_ready()) {
         vfsc_err("%s detected, but its capture backend isn't implemented yet.\n"
                   "Deploy isn't available for this sensor until that's built.\n\n",
@@ -8497,9 +8515,9 @@ static void run_diagnose_mode(void) {
         printf("Detected: %s (%04x:%04x)\n", g_detected_sensor->display_name,
                g_detected_sensor->vid, g_detected_sensor->pid);
         printf("Capture backend: %s\n",
-               g_detected_sensor->backend_available ? "available" : "not yet implemented");
+               sensor_can_enroll_verify(g_detected_sensor) ? "available" : "not yet implemented");
         diag_flag(true, "Sensor detected");
-        diag_flag(g_detected_sensor->backend_available != 0, "Capture backend not implemented for this sensor");
+        diag_flag(sensor_can_enroll_verify(g_detected_sensor) != 0, "Capture backend not implemented for this sensor");
     } else {
         printf("Detected: none\n");
         diag_flag(false, "No supported sensor detected");
