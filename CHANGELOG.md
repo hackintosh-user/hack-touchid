@@ -3,6 +3,11 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
+## Unreleased
+
+- UPEK/AuthenTec TouchStrip (`147e:2016`): Enroll `[1]` and Verify `[2]` now work with this sensor. They use the same swipe capture, minutiae extraction and template volume as the VFS5011, on top of the capture backend a tester confirmed on real hardware. Deploy `[3]` (the lock screen service) is not available for UPEK yet and says so. The `[U]` Test Capture item stays for now.
+
+---
 ## v2.0.2 | November 11th 2026
 
 - Version fix: the project version is now 2.0.2 everywhere it is shown (`VERSION.txt`, `vfs5011_proto.h` which the client and daemon are built with, the README and the website), so the client banner, About, Diagnose and the daemon check all agree. The banner also shows the branch the client tracks, next to the version and build.
