@@ -47,6 +47,10 @@
 #define VFS5011_NOTIFY_LOCKSWIPE_ENABLED  VFS5011_NOTIFY_PREFIX ".lockswipe_enabled"
 #define VFS5011_NOTIFY_LOCKSWIPE_DISABLED VFS5011_NOTIFY_PREFIX ".lockswipe_disabled"
 
+/* Daemon -> menu bar app / pane (fingerprint-for-sudo state confirmation, v2.1.0) */
+#define VFS5011_NOTIFY_PAM_ENABLED  VFS5011_NOTIFY_PREFIX ".pam_enabled"
+#define VFS5011_NOTIFY_PAM_DISABLED VFS5011_NOTIFY_PREFIX ".pam_disabled"
+
 /* Daemon -> client (the sensor has been released after a yield request) */
 #define VFS5011_NOTIFY_YIELD_READY       VFS5011_NOTIFY_PREFIX ".yield_ready"
 
@@ -57,6 +61,8 @@
 #define VFS5011_NOTIFY_REQUEST_STATE     VFS5011_NOTIFY_PREFIX ".request_state_announce"
 #define VFS5011_NOTIFY_REQUEST_LOCKSWIPE_ENABLE  VFS5011_NOTIFY_PREFIX ".request_lockswipe_enable"
 #define VFS5011_NOTIFY_REQUEST_LOCKSWIPE_DISABLE VFS5011_NOTIFY_PREFIX ".request_lockswipe_disable"
+#define VFS5011_NOTIFY_REQUEST_PAM_ENABLE        VFS5011_NOTIFY_PREFIX ".request_pam_enable"
+#define VFS5011_NOTIFY_REQUEST_PAM_DISABLE       VFS5011_NOTIFY_PREFIX ".request_pam_disable"
 
 /*
  * Preference pane (or any UI) -> daemon: set the match threshold. One distinct
@@ -97,6 +103,16 @@
     "/Library/Application Support/VFS5011/lockswipe_enabled"
 
 /*
+ * Path to the persisted "fingerprint for sudo/su is OFF" flag (v2.1.0). Presence
+ * of this file means the PAM socket answers UNAVAILABLE and sudo asks for the
+ * password; absence means ON. Default is ON, so a machine that installed the PAM
+ * module keeps working. The PAM socket (shared/pam/hack-touchid-pam-server.h)
+ * reads this same file, keep the two paths identical.
+ */
+#define VFS5011_PAM_DISABLED_FLAG_PATH \
+    "/Library/Application Support/VFS5011/pam_disabled"
+
+/*
  * Call once from main(), after the screenIsLocked/Unlocked observers
  * are registered and before CFRunLoopRun(). Registers observers on the
  * distributed notification center for the four "request_*" names, and
@@ -116,6 +132,9 @@ bool vfs5011_scanning_is_enabled(void);
 
 /* Returns true if swipe-to-lock is switched on (persisted across restarts). */
 bool vfs5011_lockswipe_is_enabled(void);
+
+/* Returns true if fingerprint for sudo/su is switched on (the default). */
+bool vfs5011_pam_is_enabled(void);
 
 /*
  * Registers a callback that runs on the main run loop whenever the menu

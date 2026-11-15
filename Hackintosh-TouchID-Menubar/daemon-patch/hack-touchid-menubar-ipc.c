@@ -36,6 +36,7 @@ static volatile bool g_scanning_enabled = true;
  * run loop, so it needs no locking either. */
 static volatile bool g_lockswipe_enabled = false;
 static void (*g_lockswipe_handler)(bool enabled) = NULL;
+static volatile bool g_pam_enabled = true; /* default ON, the flag file means OFF */
 static void (*g_yield_handler)(bool begin) = NULL;
 
 /* --- Flag file persistence --- */
@@ -98,7 +99,34 @@ static void remove_lockswipe_flag(void) {
     }
 }
 
+static bool pam_disabled_flag_exists(void) {
+    struct stat st;
+    return stat(VFS5011_PAM_DISABLED_FLAG_PATH, &st) == 0;
+}
+
+static void write_pam_disabled_flag(void) {
+    ensure_state_dir();
+    FILE *f = fopen(VFS5011_PAM_DISABLED_FLAG_PATH, "w");
+    if (f == NULL) {
+        fprintf(stderr, "vfs5011: failed to write the sudo fingerprint flag file: %s\n", strerror(errno));
+        return;
+    }
+    fprintf(f, "disabled at %ld\n", (long)time(NULL));
+    fclose(f);
+    chmod(VFS5011_PAM_DISABLED_FLAG_PATH, 0644); /* the pane reads it, read-only */
+}
+
+static void remove_pam_disabled_flag(void) {
+    if (unlink(VFS5011_PAM_DISABLED_FLAG_PATH) != 0 && errno != ENOENT) {
+        fprintf(stderr, "vfs5011: failed to remove the sudo fingerprint flag file: %s\n", strerror(errno));
+    }
+}
+
 /* --- Public: read current state --- */
+
+bool vfs5011_pam_is_enabled(void) {
+    return g_pam_enabled;
+}
 
 bool vfs5011_lockswipe_is_enabled(void) {
     return g_lockswipe_enabled;
@@ -212,6 +240,24 @@ static void set_lockswipe_enabled(bool enabled) {
     announce_lockswipe_state();
 }
 
+static void announce_pam_state(void) {
+    g_pam_enabled = !pam_disabled_flag_exists(); /* the file is the truth, the client's Settings can change it too */
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDistributedCenter(),
+        g_pam_enabled ? CFSTR(VFS5011_NOTIFY_PAM_ENABLED) : CFSTR(VFS5011_NOTIFY_PAM_DISABLED),
+        NULL, NULL, TRUE);
+}
+
+static void set_pam_enabled(bool enabled) {
+    g_pam_enabled = !pam_disabled_flag_exists();
+    if (g_pam_enabled != enabled) {
+        g_pam_enabled = enabled;
+        if (enabled) remove_pam_disabled_flag(); else write_pam_disabled_flag();
+        printf("vfs5011: fingerprint for sudo/su %s via request\n", enabled ? "ENABLED" : "DISABLED");
+    }
+    announce_pam_state(); /* always confirm, so a UI that guessed wrong corrects itself */
+}
+
 static void announce_current_state(void) {
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDistributedCenter(),
@@ -219,6 +265,7 @@ static void announce_current_state(void) {
                             : CFSTR(VFS5011_NOTIFY_SCANNING_DISABLED),
         NULL, NULL, TRUE);
     announce_lockswipe_state();
+    announce_pam_state();
 }
 
 /*
@@ -299,6 +346,10 @@ static void menubar_ipc_callback(CFNotificationCenterRef center,
         set_lockswipe_enabled(true);
     } else if (CFStringCompare(name, CFSTR(VFS5011_NOTIFY_REQUEST_LOCKSWIPE_DISABLE), 0) == kCFCompareEqualTo) {
         set_lockswipe_enabled(false);
+    } else if (CFStringCompare(name, CFSTR(VFS5011_NOTIFY_REQUEST_PAM_ENABLE), 0) == kCFCompareEqualTo) {
+        set_pam_enabled(true);
+    } else if (CFStringCompare(name, CFSTR(VFS5011_NOTIFY_REQUEST_PAM_DISABLE), 0) == kCFCompareEqualTo) {
+        set_pam_enabled(false);
     } else if (CFStringCompare(name, CFSTR(VFS5011_NOTIFY_REQUEST_YIELD_BEGIN), 0) == kCFCompareEqualTo) {
         if (g_yield_handler) g_yield_handler(true);
     } else if (CFStringCompare(name, CFSTR(VFS5011_NOTIFY_REQUEST_YIELD_END), 0) == kCFCompareEqualTo) {
@@ -309,6 +360,7 @@ static void menubar_ipc_callback(CFNotificationCenterRef center,
 void vfs5011_menubar_ipc_init(void) {
     g_scanning_enabled = !flag_file_exists();
     g_lockswipe_enabled = lockswipe_flag_exists();
+    g_pam_enabled = !pam_disabled_flag_exists();
 
     CFNotificationCenterRef center = CFNotificationCenterGetDistributedCenter();
     CFNotificationCenterAddObserver(center, NULL, menubar_ipc_callback,
@@ -331,6 +383,13 @@ void vfs5011_menubar_ipc_init(void) {
                                      CFNotificationSuspensionBehaviorDeliverImmediately);
 
     CFNotificationCenterAddObserver(center, NULL, menubar_ipc_callback,
+                                     CFSTR(VFS5011_NOTIFY_REQUEST_PAM_ENABLE), NULL,
+                                     CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(center, NULL, menubar_ipc_callback,
+                                     CFSTR(VFS5011_NOTIFY_REQUEST_PAM_DISABLE), NULL,
+                                     CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    CFNotificationCenterAddObserver(center, NULL, menubar_ipc_callback,
                                      CFSTR(VFS5011_NOTIFY_REQUEST_YIELD_BEGIN), NULL,
                                      CFNotificationSuspensionBehaviorDeliverImmediately);
     CFNotificationCenterAddObserver(center, NULL, menubar_ipc_callback,
@@ -347,8 +406,10 @@ void vfs5011_menubar_ipc_init(void) {
     }
 
     announce_lockswipe_state(); /* a menu bar app that launched first still learns the state */
+    announce_pam_state();
 
-    printf("Menu bar IPC observers registered (scanning currently %s, swipe-to-lock %s).\n",
+    printf("Menu bar IPC observers registered (scanning currently %s, swipe-to-lock %s, sudo fingerprint %s).\n",
            g_scanning_enabled ? "enabled" : "disabled",
-           g_lockswipe_enabled ? "on" : "off");
+           g_lockswipe_enabled ? "on" : "off",
+           g_pam_enabled ? "on" : "off");
 }
