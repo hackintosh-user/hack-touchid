@@ -22,8 +22,8 @@
 #define ELANMOC2_VID       0x04f3
 #define ELANMOC2_PID_0C4C  0x0c4c
 
-/* Returns 0 if the sensor answered at least one query in the expected
- * framing, 1 if it was found but did not answer (or could not be opened or
+/* Returns 0 if the sensor answered at least one query (any non-empty reply,
+ * with or without the 0x40 prefix), 1 if it was found but did not answer (or could not be opened or
  * claimed), 2 if it was not found at all, 3 on a libusb initialisation
  * failure. `debug` follows --debug / --debug-full: 0 = normal, 1 = libusb
  * transfer log on stderr, 2 = never truncate dumps. */
