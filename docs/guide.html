@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="assets/style.css"></head><body>
 <nav><div class="wrap"><a class="brand" href="index.html"><span class="fp"></span>HTID</a><a href="index.html">Home</a><a href="docs.html">Documentation</a><a href="guide.html" class=on>Guide</a><a href="security.html">Security</a><a href="contribute.html">Help grow this!</a><a href="https://github.com/hackintosh-user/hack-touchid">GitHub</a></div></nav>
 <header class="wrap page-head"><h1>Guide</h1><p>Everything you need to build, run and use HTID.</p></header><main class="wrap">
-<div class="toc"><a href="#requirements">Requirements</a><a href="#build">Build</a><a href="#run">Run the client</a><a href="#menu">The menu</a><a href="#args">Launch arguments</a><a href="#menubar">Menu bar app</a><a href="#fpbootd">Fpbootd</a><a href="#how">How it works</a><a href="#limits">Limitations</a></div>
+<div class="toc"><a href="#requirements">Requirements</a><a href="#build">Build</a><a href="#run">Run the client</a><a href="#menu">The menu</a><a href="#sensors">Sensor guides</a><a href="#args">Launch arguments</a><a href="#menubar">Menu bar app</a><a href="#fpbootd">Fpbootd</a><a href="#how">How it works</a><a href="#limits">Limitations</a></div>
 <section id="requirements"><h2>Requirements</h2><ul>
 <li><b>macOS 14 Sonoma or later</b> (macOS 15 Sequoia or later recommended). Older versions get zero support.</li>
 <li><b>OpenCore v1.0.6 or later</b>. v1.0.5 and older are not supported.</li>
@@ -23,33 +23,115 @@ chmod +x prep_and_build.sh
 <p>This produces the client and each sensor's daemon and support files.</p></section>
 <section id="run"><h2>2. Run the client</h2>
 <pre><code>sudo ./hack-touchid</code></pre>
-<p>The first launch shows verbose output. Skip it with <code>--q</code> or <code>--quiet</code>. After the first launch the client adds itself to your <code>$PATH</code>, so from any new terminal you can just run:</p>
+<p>On launch the client runs its startup checks, then clears the screen and draws the menu. If a check prints a warning or an error, the screen is not cleared so you can read it. The HTID logo, with the version, build and branch next to it, stays at the top of every screen, including after an action and in Settings. Use <code>--q</code> or <code>--quiet</code> for the plain startup (banner first, no clearing). After the first launch the client adds itself to your <code>$PATH</code>, so from any new terminal you can just run:</p>
 <pre><code>sudo hack-touchid</code></pre></section>
 <section id="menu"><h2>3. Use the menu</h2>
-<pre><code>Actions
-[1] Enroll a Finger
-[2] Verify Fingerprint Match [Score / x ]
-[3] Deploy Authentication Services
-[C] View Fingerprint (capture preview, nothing saved)
-[P] (Metallica MIS and Prometheus 97 only) Pair
-[U] (UPEK 147e:2016 only) capture .pgm
-[B] Capture (experimental, Metallica MIS and Prometheus 97 only)
-[FP] Fpbootd, Pre-Login Auth (coming soon)
+<p>The menu has three parts: the logo and version line, a <b>Status</b> checklist, and the actions in two columns. Pick an action by typing its key at the <code>Choice:</code> prompt. In a plain terminal, or when the output is piped, the dots and lines fall back to ASCII.</p>
+<pre><code>STATUS ------------------------------------------------------
+&#9679; Sensor         Validity VFS5011 138a:0018  Ready
+&#9679; Service        Deployed
+&#9679; Volume         Configured
+&#9679; Accessibility  Granted
+&#9679; Password       Stored
+&#9679; Fingers        2 Enrolled (Right Index, Left Index)
 
-Utilities
-[D] Diagnose (generate a report for troubleshooting)
-[S] Settings
-[A] About
-[X] Uninstall
-[Q] Quit</code></pre>
+AUTHENTICATE                          SENSOR TOOLS
+[1] Enroll a Finger                   [C] View Fingerprint
+[2] Verify Fingerprint score/20       [T] Sensor Test
+[3] Deploy Authentication Services
+[FP] Fpbootd Pre-Login soon
+
+SYSTEM                                HELP AND MORE
+[S] Settings                          [D] Diagnose Report
+[I] Install Preference Pane           [A] About
+[M] Install / Repair Menu Bar App     [H] Help
+[X] Uninstall                         [Q] Quit
+
+Choice:</code></pre>
+<p><b>Status.</b> A green dot means the item is ready, a yellow dot means it needs attention, and a dim dot means unknown. The Password and Fingers rows are not live checks: they fill in after you run Enroll, Verify or Deploy once in the session.</p>
+<p><b>Sensor tools</b> depend on the sensor that was detected:</p>
+<ul>
+<li>Validity VFS5011 and UPEK: <code>[C]</code> View Fingerprint (capture preview, nothing saved) and <code>[T]</code> Sensor Test. UPEK also gets <code>[U]</code> Test Capture, which saves a <code>.pgm</code> image.</li>
+<li>Metallica MIS and Prometheus 97: <code>[P]</code> Pair Sensor, <code>[B]</code> Calibrate Sensor and <code>[N]</code> Rename a Print. All three are marked experimental. Pairing normally happens by itself inside Enroll.</li>
+<li>No sensor found: the column shows <code>No sensor tools</code>.</li></ul>
 <ol class="steps">
 <li><b>Enroll a finger [1].</b> Captures several swipes and stores them as a named template on the encrypted volume. Repeat for as many fingers as you like. Verification uses best match wins.</li>
-<li><b>Verify [2].</b> A standalone test of capture and matching, independent of the daemon. Use it to confirm everything works before deploying.</li>
+<li><b>Verify [2].</b> A standalone test of capture and matching, independent of the daemon. The score is shown against your match threshold (the <code>score/20</code> note). Use it to confirm everything works before deploying.</li>
 <li><b>Deploy [3].</b> Rebuilds the daemon, installs it as a per-user LaunchAgent, re-signs it, regenerates its Accessibility grant, and installs a narrowly scoped sudoers rule so it can reach the USB device. Re-run on every deploy so the daemon is never stale.</li></ol>
-<p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for a swipe and, on a match, types the stored password.</p></section>
+<p>Once deployed, the daemon runs in the background. At the lock screen or a System Settings authentication sheet it asks for your fingerprint and, on a match, types the stored password. <code>[FP]</code> Fpbootd Pre-Login is a placeholder that does nothing yet, see <a href="#fpbootd">Fpbootd</a>.</p>
+<h3>Settings [S]</h3>
+<p>Settings has its own screen with the same logo and style, grouped by topic, and its own <code>Settings:</code> prompt. <code>[B]</code> goes back to the main menu.</p>
+<pre><code>FINGERPRINT &amp; AUTHENTICATION
+[1] Delete Fingerprint Templates
+[2] Clear Password Cache
+[3] Set/Update Auto-Type Password
+[6] Adjust Match Threshold (current: 20)
+
+STORAGE &amp; SYSTEM INTEGRATION
+[4] Set Up / Repair Template Volume
+[5] Grant/Verify Accessibility Permission
+[8] Link to a Different Volume / Check for Orphans
+[9] Set Up FPOV (Multi-OS Version Check, dual/triple boot)
+
+SWIPE TO LOCK
+[L] Swipe to Lock Sensitivity
+
+SENSOR LED (VFS5011 only)
+[LED] Sensor LED Settings
+
+UPDATES &amp; NOTIFICATIONS
+[7] Switch Branch (current: main)
+[U] Toggle Live Update Notifications (current: ON)
+[CU] Check for Updates Now
+[CM] Show Recent Commits (last 5 on a branch)
+
+[B] Back</code></pre>
+<ul>
+<li><b>Switch Branch [7].</b> The branch list is fetched live from GitHub. If GitHub cannot be reached it falls back to <code>main</code> and <code>active-development</code>. A branch is only saved if its <code>VERSION.txt</code> can be read, and the client then offers to install it. After an update installs, the branch it came from is pinned in <code>VERSION.txt</code>, so the next update check follows the same branch.</li>
+<li><b>Show Recent Commits [CM].</b> Uses the same branch picker and prints the last 5 commits on the branch you choose.</li>
+<li>Match Threshold, Swipe to Lock Sensitivity and the Sensor LED group are for VFS5011. The LED group only appears when a VFS5011 is detected.</li></ul></section>
+<section id="sensors"><h2>Sensor guides</h2>
+<p>Pick your sensor, open its guide and follow it from top to bottom. You can find your sensor's VID:PID in System Information, USB. Steps marked <b>(automatic)</b> happen on their own; they are listed so you know what the client is doing. Every guide ends the same way: deploy the daemon, then optionally install the menu bar app and the Settings pane.</p>
+
+<details class="sensor" id="sensor-vfs5011"><summary><b>Validity VFS5011</b> <code>138a:0018</code> <span class="tag ok">Working</span></summary>
+<p class="lead">A swipe sensor. The client captures swipes and matches them on the Mac with NBIS, and your templates live on an encrypted volume.</p>
+<ol class="steps">
+<li><b>Build and start.</b> Run <code>./prep_and_build.sh</code>, then <code>sudo hack-touchid</code>. The banner should name your sensor. If no sensor is found, make sure it is enabled in your USBMap and visible in System Information, USB.</li>
+<li><b>Check the sensor with [C].</b> View Fingerprint shows a live capture preview and saves nothing. Swipe at a steady speed. If the image is faint, clean the sensor and your finger.</li>
+<li><b>Enroll with [1].</b> The first time, the client sets up the encrypted template volume and asks for your macOS login password. It has to be your real password, because it is what gets typed when your finger matches. Then name the finger (for example Right Index) and swipe until the bar is full (5 good swipes). Run [1] again for more fingers.</li>
+<li><b>Verify with [2].</b> Swipe once. The client shows your match score against the threshold (default 20). If real swipes score low, enroll again with a slower, steadier swipe, or lower the Match threshold in the Settings pane (lower accepts more swipes).</li>
+<li><b>Deploy with [3].</b> Installs the background daemon, signs it, regenerates its Accessibility permission and adds the scoped sudoers rule for USB access. Run it again after every update.</li>
+<li><b>Test it.</b> Lock the screen with Ctrl+Cmd+Q and swipe at the lock screen, or open a System Settings padlock.</li>
+<li><b>Optional.</b> [M] installs the menu bar app and [I] the Settings pane. On macOS 26 Tahoe the menu bar app also offers Swipe to Lock.</li>
+</ol></details>
+
+<details class="sensor" id="sensor-metallica"><summary><b>Synaptics Metallica MIS and Prometheus</b> <code>06cb:009a</code> <code>138a:0097</code> <span class="tag ok">Working</span></summary>
+<p class="lead">Touch sensors that match on the chip. Your prints are stored on the sensor itself, and nothing about them is saved on the Mac. The sensor has to be paired to this Mac before it works, and the client does that for you.</p>
+<ol class="steps">
+<li><b>Install the dependencies and start.</b> <code>brew install libusb openssl@3 innoextract</code> (MacPorts: <code>libusb openssl3 innoextract 7zip</code>). innoextract unpacks the firmware installer. Build, run <code>sudo hack-touchid</code> and check that the banner shows your sensor.</li>
+<li><b>Start with Enroll [1].</b> Everything below happens inside this one command, so just follow the prompts and choose or name the finger when asked.</li>
+<li><b>Pairing (automatic).</b> A sensor nobody has paired yet gets a one-time setup: HTID writes the sensor's identity partitions and uploads its firmware, which it downloads from Lenovo and unpacks. The sensor restarts, the client waits about 8 seconds and carries on. Pairing swaps the sensor's trusted host identity, so fingerprints enrolled under Windows Hello or another OS on this sensor become unreadable there (they are orphaned, not deleted). [P] Pair runs this step by hand and asks you to type <code>PAIR</code>; you normally do not need it.</li>
+<li><b>Host identity (only if another OS paired the sensor first).</b> The sensor derives its key from the laptop's real product name and serial number, and macOS only sees the spoofed Mac values. The client asks for both once. On Windows, in PowerShell: <code>Get-CimInstance Win32_ComputerSystemProduct | Select Name,IdentifyingNumber</code>. On Linux: <code>cat /sys/class/dmi/id/product_name /sys/class/dmi/id/product_serial</code>. They are saved for root only, so you are asked once. You can also pass them as <code>--host-product</code> and <code>--host-serial</code>.</li>
+<li><b>Secure session, TLS (automatic).</b> The client opens an encrypted session with the sensor using the paired identity. If you see "The sensor rejected the secure connection", wait about 10 seconds and try again. If it keeps happening, attach <code>/var/log/htid-metallica-enroll.log</code> to a GitHub issue.</li>
+<li><b>Calibration (automatic, step 1 of 3).</b> Keep your finger off the sensor until it says so. You can run it again any time from the Sensor tab of the Settings pane (or <code>--mmis-calibrate</code>).</li>
+<li><b>Enroll (steps 2 and 3).</b> Touch the sensor with the same finger when asked. It usually needs about 10 good touches, then it saves the print on the sensor. If the sensor already holds prints, the client asks whether to replace them.</li>
+<li><b>Verify with [2], deploy with [3].</b> Verify with one touch, then Deploy to install the daemon. Run Deploy again after every update. On macOS 26 Tahoe, Touch to Lock is available in the menu bar app.</li>
+</ol>
+<p class="note"><b>Starting over:</b> <code>--wipe-records</code> deletes every print stored on the sensor and cannot be undone. [D] Diagnose creates a report for troubleshooting. The related ID <code>138a:009d</code> is detected, but not working yet.</p></details>
+
+<details class="sensor" id="sensor-upek"><summary><b>UPEK/AuthenTec TouchStrip</b> <code>147e:2016</code> <span class="tag dev">Experimental</span></summary>
+<p class="lead">Capture test only for now. Enroll, Verify and Deploy are not available for this sensor yet.</p>
+<ol class="steps">
+<li><b>Build and start.</b> Run <code>./prep_and_build.sh</code>, then <code>sudo hack-touchid</code>. The banner should name the UPEK TouchStrip.</li>
+<li><b>Capture with [U].</b> Swipe your finger and the client saves a <code>.pgm</code> image.</li>
+<li><b>Help the project.</b> Generate a report with [D] Diagnose and attach it, with your <code>.pgm</code> images, to a GitHub issue. That is what moves this sensor forward.</li>
+</ol></details>
+
+<p class="note"><b>Other sensors.</b> Synaptics VFS7552 (<code>138a:0092</code>) is detected but has no working backend yet. To request a sensor, open a GitHub issue with its VID:PID and a [D] Diagnose report.</p>
+</section>
 <section id="args"><h2>Launch arguments</h2><div class="scroll"><table>
 <thead><tr><th>Argument</th><th>What it does</th></tr></thead><tbody>
-<tr><td><code>--q</code> / <code>--quiet</code></td><td>Launch without the verbose boot output.</td></tr>
+<tr><td><code>--q</code> / <code>--quiet</code></td><td>Plain startup: banner first, the startup checks stay on screen and the screen is not cleared afterwards.</td></tr>
 <tr><td><code>--deploy-agent</code></td><td>Run [3] Deploy without entering the client. The menu bar app also uses it after a macOS update.</td></tr>
 <tr><td><code>--diag-pid</code></td><td>Run the [D] Diagnose steps without launching the client.</td></tr>
 <tr><td><code>--check-updates</code></td><td>Check for updates without launching the client. If there is one, it shows the [A] Show changelog / [Y] Download and install / [N] Cancel prompt.</td></tr>
@@ -62,6 +144,8 @@ Utilities
 <tr><td><code>--wipe-records</code></td><td>Delete all enrolled prints stored on the sensor. Destructive, cannot be undone.</td></tr>
 <tr><td><code>--enroll-test</code></td><td>Metallica MIS and Prometheus 97 only. Calibrate, enroll one finger on the sensor and exit. Tester tool, run it with <code>--debug</code>.</td></tr>
 <tr><td><code>--verify-test</code></td><td>Metallica MIS and Prometheus 97 only. Calibrate, touch once, match against the print saved by <code>--enroll-test</code> and exit. Run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--probe-7552</code></td><td>VFS7552 (<code>138a:0092</code>) only. Read-only USB probe, then exit. Nothing is written to the sensor. Tester tool, run it with <code>--debug</code>.</td></tr>
+<tr><td><code>--fetch-fw-7552</code></td><td>VFS7552 only. Download HP's SoftPaq, verify it, extract the firmware and exit. Needs 7-Zip.</td></tr>
 <tr><td><code>--force-pair</code></td><td>Experimental. Try to pair the sensor by writing its identity partitions. A sensor that is already paired refuses this (error <code>0x0404</code>), so use the two host flags below instead.</td></tr>
 <tr><td><code>--host-product "&lt;name&gt;"</code></td><td>Override the product name used to derive the pairing key. Use the laptop's real value, not the spoofed Mac one. Use with <code>--host-serial</code>. Applies to this run only.</td></tr>
 <tr><td><code>--host-serial "&lt;serial&gt;"</code></td><td>Override the serial used to derive the pairing key. Use the laptop's real value. Use with <code>--host-product</code>. Applies to this run only.</td></tr>
@@ -84,9 +168,9 @@ open "build/Hackintosh Touch-ID.app"</code></pre>
 <ul><li>First launch is blocked by Gatekeeper because the app is ad-hoc signed. Right-click, Open, Open again, or run <code>xattr -cr "Hackintosh Touch-ID.app"</code>.</li>
 <li>The daemon needs a small patch to send events to the app. See the <a href="https://github.com/hackintosh-user/hack-touchid/blob/main/Hackintosh-TouchID-Menubar/daemon-patch/README.md">daemon patch README</a>.</li>
 <li>While a prompt (padlock, Passwords, Keychain Access) needs your finger, a card appears at the top middle of the screen, above all apps. It needs no notification permission. Run <code>HackintoshTouchID --overlay-demo</code> to preview every card.</li>
-<li>macOS draws the lock screen above every app window, so on the lock screen the app uses a Notification Center banner instead. For readable banners, set System Settings, Notifications, Show Previews to <b>Always</b>.</li>
+<li>The card also shows on the lock screen. The app moves it into a private SkyLight space above the login window, using the technique of the MIT licensed SkyLightWindow package. To turn the lock screen card off, run <code>defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool NO</code>. If the SkyLight symbols are missing, the app falls back to Notification Center banners; for readable banners, set System Settings, Notifications, Show Previews to <b>Always</b>.</li>
 <li>Pause and resume is global, it affects every recognized prompt at once.</li>
-<li>Lock screen banners are cleared from Notification Center automatically after each attempt, so they do not pile up.</li></ul>
+<li>If the card is blocked or missing, the Notification Center banners fallback is cleared automatically after each attempt, so they do not pile up.</li></ul>
 <h3>Swipe to Lock (macOS Tahoe only)</h3>
 <p class="note"><b>macOS 26 Tahoe only</b>, and VFS5011 sensors only. The menu item does not appear on earlier macOS versions, and the daemon ignores the setting there.</p>
 <ul><li>Choose <b>Enable Swipe to Lock</b> in the menu bar app. The sensor lights up, and one swipe locks the screen (Ctrl+Cmd+Q). Choose <b>Disable Swipe to Lock</b> to turn it off.</li>
@@ -117,5 +201,9 @@ open "build/Hackintosh Touch-ID.app"</code></pre>
 <li>Ad-hoc code signing only. No notarization or Developer ID.</li>
 <li>Cold boot sign-in is not supported. macOS does not allow this level of access at the login window before a user has logged in. It could take months or years.</li></ul></section>
 </main>
+<script>
+(function(){function o(){var h=location.hash.slice(1);if(!h)return;var e=document.getElementById(h);if(e&&e.tagName==='DETAILS'){e.open=true;e.scrollIntoView();}}
+window.addEventListener('hashchange',o);o();})();
+</script>
 <footer><div class="wrap">HTID, Hackintosh Touch ID. A hobby project, not affiliated with Apple.</div></footer>
 <script src="assets/site.js"></script></body></html>

@@ -1,0 +1,77 @@
+name: Sync project version
+
+# VERSION.txt is the one place the version is set. The client and the daemon
+# compare their own VFS5011_PROJECT_VERSION macro (vfs5011/vfs5011_proto.h)
+# with each other and with VERSION.txt, so if the two ever differ users get
+# "version mismatch" errors. This workflow makes sure they cannot differ:
+# whenever either file is pushed to main, the macro is rewritten to match
+# VERSION.txt. Nothing is ever written to VERSION.txt, and only the one
+# #define line in the header is changed.
+#
+# The bot's own commit does not start another workflow run (GITHUB_TOKEN
+# pushes never trigger workflows), so there is no loop, and it also does not
+# raise BUILD. The build bump bot only changes BUILD in VERSION.txt, and its
+# pushes do not trigger this workflow either.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "VERSION.txt"
+      - "vfs5011/vfs5011_proto.h"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-project-version
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Make VFS5011_PROJECT_VERSION match VERSION.txt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Compare and fix
+        id: sync
+        shell: bash
+        run: |
+          hdr=vfs5011/vfs5011_proto.h
+          ver=$(sed -n 's/^VERSION=//p' VERSION.txt | tr -d '\r' | head -n 1)
+          if ! printf '%s' "$ver" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION= in VERSION.txt is missing or not like 2.0.2 (got: '$ver')"
+            exit 1
+          fi
+          if [ "$(grep -cE '^#define VFS5011_PROJECT_VERSION "' "$hdr")" != "1" ]; then
+            echo "::error::Expected exactly one '#define VFS5011_PROJECT_VERSION \"...\"' line in $hdr"
+            exit 1
+          fi
+          cur=$(sed -n 's/^#define VFS5011_PROJECT_VERSION "\(.*\)".*/\1/p' "$hdr")
+          if [ "$cur" = "$ver" ]; then
+            echo "Already in sync: $ver"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sed -i -E "s|^(#define VFS5011_PROJECT_VERSION \").*(\".*)\$|\1${ver}\2|" "$hdr"
+          if [ "$(sed -n 's/^#define VFS5011_PROJECT_VERSION "\(.*\)".*/\1/p' "$hdr")" != "$ver" ]; then
+            echo "::error::Could not rewrite the version in $hdr"
+            exit 1
+          fi
+          echo "Fixed: $cur -> $ver"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "old=$cur" >> "$GITHUB_OUTPUT"
+      - name: Commit and push
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vfs5011/vfs5011_proto.h
+          git commit -m "[CI]: Sync project version, now: ${{ steps.sync.outputs.ver }}" \
+            -m "VFS5011_PROJECT_VERSION was ${{ steps.sync.outputs.old }}, VERSION.txt says ${{ steps.sync.outputs.ver }}."
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main
