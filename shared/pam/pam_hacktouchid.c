@@ -120,7 +120,7 @@ static int connect_daemon(void) {
  * on timeout / EOF / error. */
 static void read_verdict(pam_handle_t *pamh, int fd, long long deadline_ms,
                          char *verdict, size_t verdict_size) {
-    char buf[HTID_PAM_MAX_LINE * 2];
+    char buf[HTID_PAM_MAX_LINE * 2] = {0};
     size_t have = 0;
     verdict[0] = '\0';
     for (;;) {

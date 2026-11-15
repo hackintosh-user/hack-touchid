@@ -200,16 +200,19 @@ static inline void *htid_pam_client_thread(void *arg) {
         }
     }
 
+    /* End the episode (and let the next request in) before the final line goes out, so a
+     * second sudo right after this one never sees BUSY because of this one. */
+    const char *final_msg = HTID_PAM_MSG_TIMEOUT;
     if (result == HTID_PAM_RESULT_OK) {
-        htid_pam_send_line(fd, HTID_PAM_MSG_OK);
+        final_msg = HTID_PAM_MSG_OK;
     } else if (result == HTID_PAM_RESULT_FAIL) {
-        htid_pam_send_line(fd, HTID_PAM_MSG_FAIL);
-    } else {
-        if (g_htid_pam_hooks.cancel) g_htid_pam_hooks.cancel();
-        if (!aborted) htid_pam_send_line(fd, HTID_PAM_MSG_TIMEOUT);
+        final_msg = HTID_PAM_MSG_FAIL;
+    } else if (g_htid_pam_hooks.cancel) {
+        g_htid_pam_hooks.cancel();
     }
     atomic_store(&g_htid_pam_active, 0);
     pthread_mutex_unlock(&g_htid_pam_episode_lock);
+    if (!aborted) htid_pam_send_line(fd, final_msg);
     close(fd);
     return NULL;
 }
