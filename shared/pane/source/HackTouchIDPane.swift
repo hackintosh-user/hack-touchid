@@ -614,7 +614,7 @@ class HackTouchIDPane: NSPreferencePane {
 
         pamSwitch.target = self
         pamSwitch.action = #selector(pamChanged)
-        let pamGroup = group("Terminal", rows: [
+        let pamGroup = group(nil, rows: [
             settingRow("Fingerprint for sudo and su", subtitle: pamHint, control: pamSwitch),
         ])
 
@@ -1300,9 +1300,13 @@ class HackTouchIDPane: NSPreferencePane {
         let pamInstalled = fileExists(Paths.pamModule)
         pamSwitch.isEnabled = pamInstalled
         pamSwitch.state = (pamInstalled && !fileExists(Paths.pamDisabledFlag)) ? .on : .off
-        pamHint.stringValue = pamInstalled
-            ? "Swipe or touch instead of typing your password in sudo, su and any terminal. The password always still works."
-            : "Not installed yet. Open the client and choose Settings, then P (Deploy installs it too)."
+        if !pamInstalled {
+            pamHint.stringValue = "Not installed. Run Deploy in the client."
+        } else if pamSwitch.state == .on {
+            pamHint.stringValue = "On. Use your fingerprint in sudo and su."
+        } else {
+            pamHint.stringValue = "Off. sudo and su ask for your password."
+        }
 
         // Tahoe section
         tahoeBox?.isHidden = macOSMajor() < 26 && !touchLockAvailable()
