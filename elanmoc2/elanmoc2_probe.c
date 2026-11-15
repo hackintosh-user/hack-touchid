@@ -20,8 +20,11 @@
  * Depau (LGPL 2.1 or later), which he reverse engineered from captures of the
  * official Windows driver, with the Python proof of concept at
  * github.com/depau/Elan-Fingerprint-0c4c-PoC. It documents the command
- * framing (0x40, then the command bytes, zero padded), the bulk endpoints and
- * the reply rule (a reply starts with 0x40). This file is a fresh
+ * framing (0x40, then the command bytes, zero padded) and the bulk endpoints.
+ * The first hardware log (issue #16) showed that the firmware version reply is
+ * 2 bare bytes with no 0x40 prefix (03 03, equal to bcdDevice 0x0303), so a
+ * reply is no longer rejected for lacking the prefix: every reply is printed
+ * raw and interpreted only where the layout is known. This file is a fresh
  * implementation of that documented framing, nothing is copied from it.
  * That driver is known to work on Linux, so every answer this probe gets on
  * macOS is a finding about macOS access, not about the protocol itself.
@@ -72,11 +75,12 @@ typedef struct {
     int cmd_len;
     int out_len;
     int is_count;
+    int is_version;
 } probe_cmd_t;
 
 static const probe_cmd_t PROBE_CMDS[] = {
-    { "firmware version query (cmd 0x19)",          { 0x19, 0x00 }, 1, 2, 0 },
-    { "enrolled finger count query (cmd 0xff 0x04)", { 0xff, 0x04 }, 2, 3, 1 },
+    { "firmware version query (cmd 0x19)",          { 0x19, 0x00 }, 1, 2, 0, 1 },
+    { "enrolled finger count query (cmd 0xff 0x04)", { 0xff, 0x04 }, 2, 3, 1, 0 },
 };
 #define PROBE_CMD_COUNT ((int)(sizeof(PROBE_CMDS) / sizeof(PROBE_CMDS[0])))
 
@@ -92,9 +96,19 @@ static int elanmoc2_build_packet(unsigned char *out, const probe_cmd_t *c) {
     return c->out_len;
 }
 
-/* 1 if the reply starts with 0x40, the only framing rule the driver applies. */
-static int elanmoc2_reply_ok(const unsigned char *rsp, int len) {
+/* 1 if the reply starts with 0x40 (the prefix some replies carry). */
+static int elanmoc2_reply_prefixed(const unsigned char *rsp, int len) {
     return len >= 1 && rsp[0] == ELANMOC2_CMD_BYTE;
+}
+
+/* The firmware version reply seen on hardware is exactly 2 bare bytes,
+ * major then minor, no 0x40 prefix (03 03 on bcdDevice 0x0303). Returns 1 and
+ * fills major/minor for that layout, 0 for anything else. */
+static int elanmoc2_parse_version(const unsigned char *rsp, int len, int *major, int *minor) {
+    if (len != 2 || rsp[0] == ELANMOC2_CMD_BYTE) return 0;
+    *major = rsp[0];
+    *minor = rsp[1];
+    return 1;
 }
 
 #ifndef ELANMOC2_PROBE_SELFTEST
@@ -224,10 +238,10 @@ static int probe_exchange(libusb_device_handle *h, const probe_cmd_t *c,
     dump_hex("  reply", rsp, got);
     if (got == 0)
         printf("  reply: empty after %d attempts\n", PROBE_MAX_ATTEMPTS);
-    else if (elanmoc2_reply_ok(rsp, got))
-        printf("  framing: reply starts with 0x40 as expected\n");
+    else if (elanmoc2_reply_prefixed(rsp, got))
+        printf("  framing: reply starts with 0x40\n");
     else
-        printf("  framing: reply does NOT start with 0x40 (first byte 0x%02x)\n", rsp[0]);
+        printf("  framing: reply has no 0x40 prefix (first byte 0x%02x), noted, not an error\n", rsp[0]);
     return got;
 }
 
@@ -310,29 +324,39 @@ int elanmoc2_probe_run(int debug) {
     int answered = 0;
     for (int i = 0; i < PROBE_CMD_COUNT; i++) {
         int got = probe_exchange(h, &PROBE_CMDS[i], rsp, PROBE_IN_BUF_SIZE);
-        if (got > 0 && elanmoc2_reply_ok(rsp, got)) {
-            answered++;
-            rc = 0;
-            /* The count query: byte 1 of the reply is the number of enrolled
-             * fingers (only the number, never who they are). */
-            if (PROBE_CMDS[i].is_count) {
-                if (got >= 2)
-                    printf("  enrolled fingers on the sensor: %d\n", rsp[1]);
-                else
-                    printf("  enrolled finger count: reply too short (%d bytes), see the length above\n", got);
-            }
-        }
-        /* A timeout or a bad reply on one query does not stop the other, but
-         * if nothing answered after the first one there is no point going on
-         * with a second command on a silent sensor. */
-        if (i == 0 && answered == 0) {
-            printf("\nno answer to the first query, stopping here.\n");
+        /* Only a USB error or a timeout stops the probe. Any other reply,
+         * prefixed or not, counts as an answer and the next query still runs. */
+        if (got < 0) {
+            printf("\nUSB error on this query (%s), stopping here.\n", libusb_error_name(got));
             break;
+        }
+        if (got == 0) continue;
+        answered++;
+        rc = 0;
+        if (PROBE_CMDS[i].is_version) {
+            int major = 0, minor = 0;
+            if (elanmoc2_parse_version(rsp, got, &major, &minor)) {
+                printf("  firmware version: %d.%d (raw %02x %02x)\n", major, minor, rsp[0], rsp[1]);
+                if ((d.bcdDevice >> 8) == major && (d.bcdDevice & 0xff) == minor)
+                    printf("  matches the USB bcdDevice 0x%04x\n", d.bcdDevice);
+                else
+                    printf("  differs from the USB bcdDevice 0x%04x\n", d.bcdDevice);
+            } else {
+                printf("  firmware version: layout not recognised, see the raw bytes above\n");
+            }
+        } else if (PROBE_CMDS[i].is_count) {
+            /* Only the number, never who the fingers are. With a 0x40 prefix
+             * byte 1 is the count; without one the layout is unknown, so only
+             * the raw bytes are reported. */
+            if (elanmoc2_reply_prefixed(rsp, got) && got >= 2)
+                printf("  enrolled fingers on the sensor: %d\n", rsp[1]);
+            else
+                printf("  enrolled finger count: layout not recognised (%d bytes, no 0x40 prefix), see the raw bytes above\n", got);
         }
     }
 
-    printf("\nprobe finished, result: %s (%d of %d queries answered with a 0x40 reply)\n",
-           rc == 0 ? "sensor answered" : "sensor did NOT answer as expected", answered, PROBE_CMD_COUNT);
+    printf("\nprobe finished, result: %s (%d of %d queries got a reply)\n",
+           rc == 0 ? "sensor answered" : "sensor did NOT answer", answered, PROBE_CMD_COUNT);
     if (rc != 0)
         printf("This does not mean the sensor is unsupported. It may need a different start-up step first,\n"
                "or something on the system may be holding the device. Please post this whole output in the GitHub issue.\n");
@@ -365,19 +389,32 @@ int main(void) {
     }
     /* A command longer than the buffer must be refused. */
     {
-        probe_cmd_t big = { "oversized", { 0x01, 0x02 }, 2, PROBE_OUT_MAX + 1, 0 };
+        probe_cmd_t big = { "oversized", { 0x01, 0x02 }, 2, PROBE_OUT_MAX + 1, 0, 0 };
         unsigned char pkt[PROBE_OUT_MAX];
         int ok = elanmoc2_build_packet(pkt, &big) == 0;
         printf("%-50s %s\n", "oversized command refused", ok ? "ok" : "FAIL");
         if (!ok) bad++;
     }
-    /* Reply rule: starts with 0x40. */
+    /* Prefix check. */
     {
         static const unsigned char good[]  = { 0x40, 0x00 };
         static const unsigned char other[] = { 0x00, 0x40 };
-        int ok = elanmoc2_reply_ok(good, sizeof(good)) && !elanmoc2_reply_ok(other, sizeof(other)) &&
-                 !elanmoc2_reply_ok(good, 0);
+        int ok = elanmoc2_reply_prefixed(good, sizeof(good)) && !elanmoc2_reply_prefixed(other, sizeof(other)) &&
+                 !elanmoc2_reply_prefixed(good, 0);
         printf("%-50s %s\n", "reply starts with 0x40", ok ? "ok" : "FAIL");
+        if (!ok) bad++;
+    }
+    /* Version reply from hardware: 03 03 is version 3.3, bare 2 bytes. */
+    {
+        static const unsigned char fw[]   = { 0x03, 0x03 };
+        static const unsigned char pre[]  = { 0x40, 0x03 };
+        static const unsigned char three[] = { 0x03, 0x03, 0x00 };
+        int ma = 0, mi = 0;
+        int ok = elanmoc2_parse_version(fw, sizeof(fw), &ma, &mi) && ma == 3 && mi == 3 &&
+                 !elanmoc2_parse_version(pre, sizeof(pre), &ma, &mi) &&
+                 !elanmoc2_parse_version(three, sizeof(three), &ma, &mi) &&
+                 !elanmoc2_parse_version(fw, 0, &ma, &mi);
+        printf("%-50s %s\n", "version reply 03 03 parsed as 3.3", ok ? "ok" : "FAIL");
         if (!ok) bad++;
     }
     printf(bad ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", bad);
