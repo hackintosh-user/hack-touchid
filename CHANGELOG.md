@@ -3,6 +3,14 @@
 All notable changes to the Hackintosh-TouchID fingerprint authentication project are documented here.
 
 ---
+## Unreleased | branch `active-development` (v2.1.0)
+
+- New: fingerprint for `sudo` and `su` in any terminal, through a PAM module (`shared/pam/`). `pam_hacktouchid.so` sits in front of the password (`auth sufficient`), never touches the sensor and asks the root fingerprint daemon over a root-only unix socket (`/var/run/hack-touchid-pam.sock`). A match approves the command, anything else (no match, timeout, daemon off, sensor busy) falls through to the normal password prompt. It is skipped when there is no terminal (`sudo -n`, scripts) and inside SSH sessions.
+- The daemon gets a new `TRIGGER_PAM` episode that reuses the lock screen capture and match loop. It only answers yes or no, the stored login password is never read for it, and the lock screen takes over if the screen locks during a request.
+- Only users listed in `/usr/local/libexec/hack-touchid/pam_users.conf` (root owned, not writable by others) are accepted. `hack-touchid-pam-install.sh install|uninstall|status` builds and installs the module, writes that file and adds the line to `/etc/pam.d/sudo_local` (macOS 14+, survives updates), plus `--service NAME` for other services such as `su`.
+- Build and test: `scripts/build_pam.sh` (`--universal`, `--test` runs `shared/pam/pam_selftest.c`, an end-to-end test of module and socket with a fake sensor). Not yet run on a Mac, and only the VFS5011 daemon has the socket so far.
+
+---
 ## v2.0.2 | November 11th 2026
 
 - Version fix: the project version is now 2.0.2 everywhere it is shown (`VERSION.txt`, `vfs5011_proto.h` which the client and daemon are built with, the README and the website), so the client banner, About, Diagnose and the daemon check all agree. The banner also shows the branch the client tracks, next to the version and build.

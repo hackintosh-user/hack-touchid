@@ -333,10 +333,10 @@ List as goes:
   open-source libfprint driver directly instead (see Acknowledgments).
 - Targets macOS 14 Sonoma and later only; the client prints a warning if
   run on an older Darwin version.
-- No PAM module exists for `sudo` in a terminal. An Accessibility-based
-  approach for `sudo` prompts was prototyped during development and
-  intentionally removed to keep scope limited to lock screen and System
-  Settings authentication. (there are still plans to attempt implementing this. But unknown if Modern macOS allows this type of access within the user space-range)
+- Fingerprint for `sudo` and `su` in a terminal is a PAM module that is new
+  in v2.1.0 (in development on `active-development`, `shared/pam/`). It
+  works with the VFS5011 daemon only for now, and is untested on hardware.
+  The earlier Accessibility-based approach for `sudo` prompts was removed.
 - Ad hoc code signing is used for the daemon binary and its
   Accessibility grant, both regenerated on every deploy. There is no
   notarization or Developer ID signing.
