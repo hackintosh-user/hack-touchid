@@ -24,17 +24,24 @@ private enum Notify {
     static let requestState = "\(prefix).request_state_announce"
     static let requestLockSwipeEnable = "\(prefix).request_lockswipe_enable"
     static let requestLockSwipeDisable = "\(prefix).request_lockswipe_disable"
+    static let requestPamEnable = "\(prefix).request_pam_enable"
+    static let requestPamDisable = "\(prefix).request_pam_disable"
     static let thresholdPrefix = "\(prefix).request_threshold_"
     static let scanningEnabled = "\(prefix).scanning_enabled"
     static let scanningDisabled = "\(prefix).scanning_disabled"
     static let lockSwipeEnabled = "\(prefix).lockswipe_enabled"
     static let lockSwipeDisabled = "\(prefix).lockswipe_disabled"
+    static let pamEnabled = "\(prefix).pam_enabled"
+    static let pamDisabled = "\(prefix).pam_disabled"
     static let thresholdChanged = "\(prefix).threshold_changed"
 }
 
 private enum Paths {
     static let scanningDisabledFlag = "/Library/Application Support/VFS5011/scanning_disabled"
     static let lockSwipeFlag = "/Library/Application Support/VFS5011/lockswipe_enabled"
+    /// Present means the fingerprint for sudo and su is OFF, absent means ON (the default).
+    static let pamDisabledFlag = "/Library/Application Support/VFS5011/pam_disabled"
+    static let pamModule = "/usr/local/lib/pam/pam_hacktouchid.so"
     static let thresholdConf = "/usr/local/libexec/hack-touchid/match_threshold.conf"
     static let clientLink = "/usr/local/bin/hack-touchid"
 }
@@ -264,6 +271,8 @@ class HackTouchIDPane: NSPreferencePane {
     private let thresholdHint = label("", secondary: true)
     private let lockSwipeSwitch = NSSwitch()
     private let lockSwipeHint = label("", secondary: true)
+    private let pamSwitch = NSSwitch()
+    private let pamHint = label("", secondary: true)
     private var tahoeBox: NSView?
     private var generalPage: NSView?
     private var aboutPage: NSView?
@@ -438,7 +447,8 @@ class HackTouchIDPane: NSPreferencePane {
         // even if the menu bar app is not running.
         let center = DistributedNotificationCenter.default()
         let names = [Notify.scanningEnabled, Notify.scanningDisabled,
-                     Notify.lockSwipeEnabled, Notify.lockSwipeDisabled, Notify.thresholdChanged]
+                     Notify.lockSwipeEnabled, Notify.lockSwipeDisabled,
+                     Notify.pamEnabled, Notify.pamDisabled, Notify.thresholdChanged]
         for n in names {
             let token = center.addObserver(forName: NSNotification.Name(n), object: nil, queue: .main) { [weak self] _ in
                 self?.refreshAll()
@@ -602,6 +612,12 @@ class HackTouchIDPane: NSPreferencePane {
             settingRow("Notifications", control: openNotif),
         ])
 
+        pamSwitch.target = self
+        pamSwitch.action = #selector(pamChanged)
+        let pamGroup = group("Terminal", rows: [
+            settingRow("Fingerprint for sudo and su", subtitle: pamHint, control: pamSwitch),
+        ])
+
         lockSwipeSwitch.target = self
         lockSwipeSwitch.action = #selector(lockSwipeChanged)
         let touchLock = touchLockAvailable()
@@ -611,7 +627,7 @@ class HackTouchIDPane: NSPreferencePane {
         tahoeGroup.isHidden = macOSMajor() < 26 && !touchLock
         tahoeBox = tahoeGroup
 
-        for g in [authGroup, statusGroup, thresholdGroup, actionsGroup, tahoeGroup] {
+        for g in [authGroup, statusGroup, thresholdGroup, pamGroup, actionsGroup, tahoeGroup] {
             page.addArrangedSubview(g)
             fillWidth(g, of: page)
         }
@@ -1280,6 +1296,14 @@ class HackTouchIDPane: NSPreferencePane {
         if let idx = thresholdChoices.firstIndex(of: current) { thresholdPopup.selectItem(at: idx) }
         thresholdHint.stringValue = "Lower accepts more swipes, higher is stricter. Default \(thresholdDefault)."
 
+        // Fingerprint for sudo and su
+        let pamInstalled = fileExists(Paths.pamModule)
+        pamSwitch.isEnabled = pamInstalled
+        pamSwitch.state = (pamInstalled && !fileExists(Paths.pamDisabledFlag)) ? .on : .off
+        pamHint.stringValue = pamInstalled
+            ? "Swipe or touch instead of typing your password in sudo, su and any terminal. The password always still works."
+            : "Not installed yet. Open the client and choose Settings, then P (Deploy installs it too)."
+
         // Tahoe section
         tahoeBox?.isHidden = macOSMajor() < 26 && !touchLockAvailable()
         lockSwipeSwitch.state = fileExists(Paths.lockSwipeFlag) ? .on : .off
@@ -1318,6 +1342,10 @@ class HackTouchIDPane: NSPreferencePane {
     @objc private func thresholdChanged() {
         guard let title = thresholdPopup.titleOfSelectedItem, let v = Int(title) else { return }
         postRequest(Notify.thresholdPrefix + String(v))
+    }
+
+    @objc private func pamChanged() {
+        postRequest(pamSwitch.state == .on ? Notify.requestPamEnable : Notify.requestPamDisable)
     }
 
     @objc private func lockSwipeChanged() {
