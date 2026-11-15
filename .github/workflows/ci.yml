@@ -52,8 +52,9 @@ jobs:
           cppcheck --force --enable=warning,performance,portability \
             --suppress=missingInclude \
             --error-exitcode=1 \
-            -I. -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Ivfs7552 -INBIS/include \
+            -I. -Ishared/pam -Ishared/sen -Imetallica -Iupek -Ivfs5011 -Ivfs7552 -INBIS/include \
             shared/access/ax_probe.c vfs5011/vfs5011_daemon.c hack_touchid_client.c \
+            shared/pam/pam_hacktouchid.c \
             shared/sen/hack-touchid-matcher.c vfs5011/hack-touchid-menubar-ipc.c \
             metallica/metallica_mis_daemon.c metallica/metallica_mis_firmware.c \
             metallica/metallica_mis_tls.c metallica/metallica_mis_init_flash.c \
@@ -142,6 +143,9 @@ jobs:
             vfs5011/vfs5011_led.h vfs5011/htid_led_probe.c \
             vfs5011/hack-touchid-menubar-ipc.c vfs5011/hack-touchid-menubar-ipc.h \
             vfs5011/hack-touchid-agent-install.sh \
+            scripts/build_pam.sh shared/pam/pam_hacktouchid.c shared/pam/pam_selftest.c \
+            shared/pam/hack-touchid-pam-proto.h shared/pam/hack-touchid-pam-server.h \
+            shared/pam/hack-touchid-pam-install.sh \
             vol/hack-touchid-volume-mount.sh vol/hack-touchid-volume-unmount.sh \
             vol/hack-touchid-setup-volume.sh vol/hack-touchid-store-password.sh \
             upek/upek_daemon.c upek/upek_daemon.h upek/upek_proto.h \
