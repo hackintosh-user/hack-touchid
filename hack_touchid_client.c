@@ -5438,6 +5438,8 @@ static void do_settings_toggle_live_update(void) {
 #define PAM_DISABLED_FLAG_PATH "/Library/Application Support/VFS5011/pam_disabled" /* keep in sync with VFS5011_PAM_DISABLED_FLAG_PATH */
 #define PAM_INSTALL_SCRIPT     "shared/pam/hack-touchid-pam-install.sh"
 
+static void print_settings_group(const char *title); /* defined with the Settings menu below */
+
 static bool pam_installed(void) { return access(PAM_MODULE_PATH, F_OK) == 0; }
 static bool pam_switched_on(void) { return access(PAM_DISABLED_FLAG_PATH, F_OK) != 0; }
 
