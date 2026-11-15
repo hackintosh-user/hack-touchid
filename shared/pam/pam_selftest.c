@@ -9,6 +9,7 @@
  *
  *   cc -Wall -Wextra -DHTID_PAM_SOCKET_PATH='"/tmp/htid-pam-test.sock"' \
  *      -DHTID_PAM_USERS_CONF='"/tmp/htid-pam-users.conf"' \
+ *      -DHTID_PAM_DISABLED_FLAG='"/tmp/htid-pam-disabled-flag"' \
  *      -I<openpam include dir> -Ishared/pam shared/pam/pam_selftest.c \
  *      -o pam_selftest -lpthread && sudo ./pam_selftest
  *
@@ -21,6 +22,9 @@
 #endif
 #ifndef HTID_PAM_USERS_CONF
 #define HTID_PAM_USERS_CONF "/tmp/htid-pam-users.conf"
+#endif
+#ifndef HTID_PAM_DISABLED_FLAG
+#define HTID_PAM_DISABLED_FLAG "/tmp/htid-pam-disabled-flag"
 #endif
 
 #include "pam_hacktouchid.c"
@@ -111,6 +115,7 @@ int main(void) {
     unsetenv("SSH_CONNECTION");
     unsetenv("SSH_TTY");
     unlink(HTID_PAM_SOCKET_PATH);
+    unlink(HTID_PAM_DISABLED_FLAG);
 
     struct pam_handle h;
     init_handle(&h, "alice", "/dev/ttys001");
@@ -137,6 +142,20 @@ int main(void) {
     init_handle(&h, "alice", "/dev/ttys001");
     check("no swipe in time -> PAM_AUTHINFO_UNAVAIL", pam_sm_authenticate(&h, 0, 1, args_t3) == PAM_AUTHINFO_UNAVAIL);
     check("timeout cancelled the episode", atomic_load(&g_cancel_calls) == cancels + 1);
+
+    {
+        FILE *ff = fopen(HTID_PAM_DISABLED_FLAG, "w");
+        if (ff) fclose(ff);
+        int b = atomic_load(&g_begin_calls);
+        init_handle(&h, "alice", "/dev/ttys001");
+        check("switched off (flag file) -> ignore", pam_sm_authenticate(&h, 0, 0, NULL) == PAM_IGNORE);
+        check("switched off never arms the sensor", atomic_load(&g_begin_calls) == b);
+        unlink(HTID_PAM_DISABLED_FLAG);
+        g_report_after_ms = 300; g_report_value = HTID_PAM_RESULT_OK;
+        init_handle(&h, "alice", "/dev/ttys001");
+        check("switched back on -> PAM_SUCCESS", pam_sm_authenticate(&h, 0, 0, NULL) == PAM_SUCCESS);
+        g_report_after_ms = 0;
+    }
 
     g_begin_rc = 1;
     init_handle(&h, "alice", "/dev/ttys001");

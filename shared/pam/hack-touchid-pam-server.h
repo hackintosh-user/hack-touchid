@@ -155,6 +155,13 @@ static inline void *htid_pam_client_thread(void *arg) {
     if (timeout_ms < HTID_PAM_TIMEOUT_MIN_MS) timeout_ms = HTID_PAM_TIMEOUT_MIN_MS;
     if (timeout_ms > HTID_PAM_TIMEOUT_MAX_MS) timeout_ms = HTID_PAM_TIMEOUT_MAX_MS;
 
+    /* Switched off from the client or the preference pane. */
+    struct stat flag_st;
+    if (stat(HTID_PAM_DISABLED_FLAG, &flag_st) == 0) {
+        htid_pam_send_line(fd, HTID_PAM_MSG_UNAVAILABLE);
+        close(fd);
+        return NULL;
+    }
     if (!htid_pam_user_enabled(user)) {
         htid_pam_send_line(fd, HTID_PAM_MSG_DENIED);
         close(fd);

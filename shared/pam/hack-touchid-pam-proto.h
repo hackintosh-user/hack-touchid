@@ -16,7 +16,7 @@
  *                        TIMEOUT      nobody swiped in time
  *                        BUSY         another episode (lock screen, padlock,
  *                                     another PAM request) owns the sensor
- *                        UNAVAILABLE  paused, no sensor, no templates
+ *                        UNAVAILABLE  switched off, paused, no sensor, no templates
  *                        DENIED       this user is not enabled for PAM
  *
  * The module closing the socket cancels the episode on the daemon side.
@@ -42,6 +42,13 @@
 #endif
 #ifndef HTID_PAM_USERS_CONF
 #define HTID_PAM_USERS_CONF "/usr/local/libexec/hack-touchid/pam_users.conf"
+#endif
+
+/* The on/off switch (client Settings [P], preference pane). Present = fingerprint
+ * for sudo/su is OFF, absent = ON, the same pattern as the scanning_disabled flag.
+ * Must match VFS5011_PAM_DISABLED_FLAG_PATH in hack-touchid-menubar-ipc.h. */
+#ifndef HTID_PAM_DISABLED_FLAG
+#define HTID_PAM_DISABLED_FLAG "/Library/Application Support/VFS5011/pam_disabled"
 #endif
 
 #define HTID_PAM_PROTO_VERSION     1

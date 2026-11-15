@@ -30,6 +30,7 @@ PAM_D="${HTID_PAM_D:-/etc/pam.d}"
 LIB_DIR="${HTID_PAM_LIB_DIR:-/usr/local/lib/pam}"
 CONF_DIR="${HTID_PAM_CONF_DIR:-/usr/local/libexec/hack-touchid}"
 SOCKET="${HTID_PAM_SOCKET:-/var/run/hack-touchid-pam.sock}"
+DISABLED_FLAG="${HTID_PAM_DISABLED_FLAG:-/Library/Application Support/VFS5011/pam_disabled}"
 MODULE_NAME="pam_hacktouchid.so"
 MODULE="$LIB_DIR/$MODULE_NAME"
 USERS_CONF="$CONF_DIR/pam_users.conf"
@@ -120,13 +121,15 @@ do_install() {
     if [ ! -f "$built" ]; then
         echo "Building $MODULE_NAME..."
         if [ -n "$SUDO_USER" ] && [ "$HTID_PAM_TEST" != "1" ]; then
-            sudo -u "$SUDO_USER" "$REPO_ROOT/scripts/build_pam.sh"
+            sudo -u "$SUDO_USER" bash "$REPO_ROOT/scripts/build_pam.sh"
         else
-            "$REPO_ROOT/scripts/build_pam.sh"
+            bash "$REPO_ROOT/scripts/build_pam.sh"
         fi
     fi
     [ -f "$built" ] || { echo "error: $built was not built." >&2; exit 1; }
 
+    local fresh=0
+    [ -f "$MODULE" ] || fresh=1
     mkdir -p "$LIB_DIR" "$CONF_DIR"
     chmod 755 "$LIB_DIR" "$CONF_DIR"
     own_root "$LIB_DIR" "$CONF_DIR"
@@ -143,6 +146,8 @@ do_install() {
     chmod 644 "$USERS_CONF"
     own_root "$USERS_CONF"
     echo "Enabled for user: $user"
+    # A first install starts ON. A reinstall keeps whatever the person chose.
+    [ "$fresh" = "1" ] && rm -f "$DISABLED_FLAG"
 
     add_line "$PAM_D/sudo_local"
     echo "sudo: line added to $PAM_D/sudo_local"
@@ -171,11 +176,13 @@ do_uninstall() {
     done
     rm -f "$MODULE"
     rm -f "$USERS_CONF"
+    rm -f "$DISABLED_FLAG"
     echo "Fingerprint for sudo/su removed. The password is unchanged."
 }
 
 do_status() {
     echo "module:      $([ -f "$MODULE" ] && echo "installed ($MODULE)" || echo "not installed")"
+    echo "switch:      $([ -f "$DISABLED_FLAG" ] && echo "OFF" || echo "ON")"
     echo "users file:  $([ -f "$USERS_CONF" ] && tr '\n' ' ' < "$USERS_CONF" || echo "none")"
     local f any=0
     for f in "$PAM_D"/*; do
