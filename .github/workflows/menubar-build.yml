@@ -4,12 +4,15 @@ name: Menu bar app prebuilt
 # whenever its source, assets or build script change on main. Nobody has
 # to compile and commit the binary by hand any more.
 #
+# Runs for main and active-development, and the manual "Run workflow" button builds
+# and commits to whichever branch is selected there (the commit goes to that branch).
+#
 # The commit is made with GITHUB_TOKEN, so it does not start another
 # workflow run (no loop). It is skipped when the build output is identical.
 
 on:
   push:
-    branches: [main]
+    branches: [main, active-development]
     paths:
       - "Hackintosh-TouchID-Menubar/VFS5011MenuBar/**"
       - "Hackintosh-TouchID-Menubar/Assets/**"
@@ -20,7 +23,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: menubar-prebuilt
+  group: menubar-prebuilt-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -30,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
       - name: Build
         run: |
           bash Hackintosh-TouchID-Menubar/build_menubar_app.sh
@@ -40,6 +43,8 @@ jobs:
           test -x "$APP/Contents/MacOS/HackintoshTouchID"
           cmp "$APP/Contents/Info.plist" Hackintosh-TouchID-Menubar/VFS5011MenuBar/Info.plist
       - name: Commit the prebuilt app
+        env:
+          BRANCH: ${{ github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -50,5 +55,5 @@ jobs:
           fi
           git commit -m "Menu bar app: rebuild prebuilt app (CI)" \
             -m "Built from ${GITHUB_SHA} by the menubar-build workflow."
-          git pull --rebase --autostash origin main
-          git push origin HEAD:main
+          git pull --rebase --autostash origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"

@@ -4,6 +4,9 @@ name: Preference pane prebuilt
 # shared/pane/build whenever its source, Info.plist or build script change
 # on main. Nobody has to compile and commit the bundle by hand any more.
 #
+# Runs for main and active-development, and the manual "Run workflow" button builds
+# and commits to whichever branch is selected there (the commit goes to that branch).
+#
 # The commit is made with GITHUB_TOKEN, so it does not start another
 # workflow run (no loop). It is skipped when the build output is identical.
 # The pane version follows VERSION.txt at build time (the bump workflow
@@ -12,7 +15,7 @@ name: Preference pane prebuilt
 
 on:
   push:
-    branches: [main]
+    branches: [main, active-development]
     paths:
       - "shared/pane/source/HackTouchIDPane.swift"
       - "shared/pane/source/Info.plist"
@@ -24,7 +27,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: pane-prebuilt
+  group: pane-prebuilt-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -34,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
       - name: Build
         run: |
           bash shared/pane/source/build_prefpane.sh
@@ -48,6 +51,8 @@ jobs:
           echo "source hash expected=$EXPECTED actual=$ACTUAL"
           test "$EXPECTED" = "$ACTUAL"
       - name: Commit the prebuilt pane
+        env:
+          BRANCH: ${{ github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -58,5 +63,5 @@ jobs:
           fi
           git commit -m "Preference pane: rebuild prebuilt pane (CI)" \
             -m "Built from ${GITHUB_SHA} by the pane-build workflow."
-          git pull --rebase --autostash origin main
-          git push origin HEAD:main
+          git pull --rebase --autostash origin "$BRANCH"
+          git push origin "HEAD:$BRANCH"
