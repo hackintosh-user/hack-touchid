@@ -1257,6 +1257,10 @@ static void ui_section(const char *title) {
 
 /* One status line: state 1 = good (green dot), 0 = needs attention (yellow),
  * -1 = unknown (dim). The note is dim text after the value. */
+/* Fingerprint for sudo/su (defined with the Settings code further down). */
+static bool pam_installed(void);
+static bool pam_switched_on(void);
+
 static void ui_status_row(int state, const char *label, const char *value, const char *note) {
     const char *col = state > 0 ? VFSC_GREEN : (state == 0 ? VFSC_YELLOW : VFSC_DIM);
     printf(" %s%s%s %s%-15s%s%s%s%s", col, state > 0 ? UI_ON : UI_OFF, VFSC_RESET,
@@ -1994,6 +1998,10 @@ static void print_menu(void) {
     ui_status_row(deployed ? 1 : 0, "Service", deployed ? "Deployed" : "Not deployed", NULL);
     ui_status_row(volume_ready ? 1 : 0, "Volume", volume_ready ? "Configured" : "Not set up", NULL);
     ui_status_row(accessibility_ready ? 1 : 0, "Accessibility", accessibility_ready ? "Granted" : "Not detected", NULL);
+    if (!pam_installed())
+        ui_status_row(0, "Sudo", "Fingerprint not set up", "Settings [P]");
+    else
+        ui_status_row(pam_switched_on() ? 1 : -1, "Sudo", pam_switched_on() ? "Fingerprint ON" : "Fingerprint OFF", NULL);
 
     /* Not a live check either, same reasoning as Fingers below. */
     password_state_load();
@@ -5416,6 +5424,134 @@ static void do_settings_toggle_live_update(void) {
     }
 }
 
+/* ------------------------------------------------------------------ *
+ * Fingerprint for sudo and su (PAM module, v2.1.0)
+ * ------------------------------------------------------------------ *
+ * shared/pam/ holds a PAM module (pam_hacktouchid.so) that asks the root
+ * fingerprint daemon over a root-only socket. It is installed by
+ * hack-touchid-pam-install.sh (module in /usr/local/lib/pam, the user in
+ * pam_users.conf, one line in /etc/pam.d/sudo_local). The on/off switch is a
+ * flag file the daemon's PAM socket reads on every request, the same file the
+ * System Settings pane toggles through the daemon: present = OFF, absent = ON.
+ * Deploy installs it automatically when it is missing. */
+#define PAM_MODULE_PATH        "/usr/local/lib/pam/pam_hacktouchid.so"
+#define PAM_DISABLED_FLAG_PATH "/Library/Application Support/VFS5011/pam_disabled" /* keep in sync with VFS5011_PAM_DISABLED_FLAG_PATH */
+#define PAM_INSTALL_SCRIPT     "shared/pam/hack-touchid-pam-install.sh"
+
+static bool pam_installed(void) { return access(PAM_MODULE_PATH, F_OK) == 0; }
+static bool pam_switched_on(void) { return access(PAM_DISABLED_FLAG_PATH, F_OK) != 0; }
+
+static const char *pam_state_label(void) {
+    if (!pam_installed()) return "not installed";
+    return pam_switched_on() ? "ON" : "OFF";
+}
+
+/* Runs the install script (the client is root already) with one action, captured.
+ * The script's own output is only shown when it fails. Returns true on exit status 0. */
+static bool pam_run_script(const char *action) {
+    const char *sudo_user = getenv("SUDO_USER");
+    if (strcmp(action, "install") == 0 && (!sudo_user || !*sudo_user || strcmp(sudo_user, "root") == 0)) {
+        vfsc_err("Run the client with sudo from your own account (not as root) so the fingerprint is enabled for you.\n\n");
+        return false;
+    }
+    char cmd[PATH_MAX + 64];
+    snprintf(cmd, sizeof(cmd), "bash \"%s\" %s 2>&1", ht_script(PAM_INSTALL_SCRIPT), action);
+    FILE *fp = popen(cmd, "r");
+    char captured[4096] = {0};
+    if (fp) {
+        char line[512];
+        while (fgets(line, sizeof(line), fp))
+            strncat(captured, line, sizeof(captured) - strlen(captured) - 1);
+    }
+    int status = fp ? pclose(fp) : -1;
+    if (status != 0) {
+        printf("\n%s\n", captured);
+        vfsc_err("Fingerprint for sudo and su: '%s' failed (exit status %d), see the output above.\n\n", action, status);
+        return false;
+    }
+    return true;
+}
+
+/* Turns the fingerprint for sudo/su on or off without touching /etc/pam.d. */
+static bool pam_set_switch(bool on) {
+    if (on) {
+        if (unlink(PAM_DISABLED_FLAG_PATH) != 0 && errno != ENOENT) {
+            vfsc_err("Failed to remove %s: %s\n\n", PAM_DISABLED_FLAG_PATH, strerror(errno));
+            return false;
+        }
+        return true;
+    }
+    system("mkdir -p \"/Library/Application Support/VFS5011\"");
+    FILE *f = fopen(PAM_DISABLED_FLAG_PATH, "w");
+    if (!f) {
+        vfsc_err("Failed to write %s: %s\n\n", PAM_DISABLED_FLAG_PATH, strerror(errno));
+        return false;
+    }
+    fprintf(f, "disabled at %ld\n", (long)time(NULL));
+    fclose(f);
+    chmod(PAM_DISABLED_FLAG_PATH, 0644); /* the System Settings pane reads it */
+    return true;
+}
+
+/* Deploy calls this: installs the module when it is missing. Never fails Deploy. */
+static void pam_ensure_installed(void) {
+    if (pam_installed()) return;
+    printf("%sSetting up fingerprint for sudo and su...%s\n", VFSC_DIM, VFSC_RESET);
+    if (pam_run_script("install")) {
+        vfsc_ok("Fingerprint for sudo and su is ON. Try it in a new terminal: sudo -k && sudo true\n\n");
+    } else {
+        vfsc_warn("Fingerprint for sudo and su was not set up. Deploy itself succeeded; retry with Settings [P].\n\n");
+    }
+}
+
+static void do_settings_pam(void) {
+    char line[64];
+    for (;;) {
+        print_banner();
+        printf("\n");
+        print_settings_group("FINGERPRINT FOR SUDO AND SU");
+        printf(" Status: %s%s%s\n", VFSC_BOLD, pam_state_label(), VFSC_RESET);
+        printf(" Swipe or touch instead of typing the password in sudo, su and any terminal.\n");
+        printf(" The password always still works (wrong finger, timeout, SSH, scripts).\n\n");
+        printf(" %s[1]%s %s\n", VFSC_BOLD, VFSC_RESET, pam_installed() ? "Reinstall the module" : "Install");
+        if (pam_installed())
+            printf(" %s[2]%s Turn %s\n", VFSC_BOLD, VFSC_RESET, pam_switched_on() ? "OFF" : "ON");
+        if (pam_installed())
+            printf(" %s[3]%s Uninstall\n", VFSC_BOLD, VFSC_RESET);
+        printf("\n %s[B]%s Back\n ", VFSC_BOLD, VFSC_RESET);
+        ui_hrule(UI_WIDTH - 2, VFSC_DIM);
+        printf("\n\n");
+        ui_prompt("Sudo fingerprint");
+
+        if (!fgets(line, sizeof(line), stdin)) { printf("\n"); return; }
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' || line[len-1] == ' ')) line[--len] = '\0';
+        if (len == 0) continue;
+        printf("\n");
+
+        switch (line[0]) {
+            case '1':
+                if (pam_run_script("install"))
+                    vfsc_ok("Installed. Try it in a new terminal: sudo -k && sudo true\n\n");
+                break;
+            case '2':
+                if (!pam_installed()) { vfsc_err("Install it first with [1].\n\n"); break; }
+                if (pam_set_switch(!pam_switched_on()))
+                    vfsc_ok("Fingerprint for sudo and su is now %s.\n\n", pam_switched_on() ? "ON" : "OFF");
+                break;
+            case '3':
+                if (!pam_installed()) { vfsc_err("It is not installed.\n\n"); break; }
+                if (pam_run_script("uninstall")) {
+                    unlink(PAM_DISABLED_FLAG_PATH);
+                    vfsc_ok("Removed. sudo asks for the password only.\n\n");
+                }
+                break;
+            case 'B': case 'b': return;
+            default: vfsc_err("Unrecognized option '%s'. Choose 1-3 or B.\n\n", line);
+        }
+    }
+}
+
 /* Defined further down in the updater section. */
 static void do_settings_recent_commits(void);
 static void do_settings_switch_branch(void);
@@ -5615,6 +5751,10 @@ static void print_settings_menu(void) {
     printf(" %s[L]%s Swipe to Lock Sensitivity (current: %d rows)\n", VFSC_BOLD, VFSC_RESET, read_lockswipe_min_height());
     printf("\n");
 
+    print_settings_group("SUDO & TERMINAL");
+    printf(" %s[P]%s Fingerprint for sudo and su (current: %s)\n", VFSC_BOLD, VFSC_RESET, pam_state_label());
+    printf("\n");
+
     if (is_vfs5011_sensor()) {
         print_settings_group("SENSOR LED");
         printf(" %s[LED]%s Sensor LED Settings (brightness: %d%%, red on wrong finger: %s)\n", VFSC_BOLD, VFSC_RESET,
@@ -5687,9 +5827,10 @@ static void do_settings_menu(void) {
             case '9': do_settings_setup_fpov(); break;
             case 'U': case 'u': do_settings_toggle_live_update(); break;
             case 'L': case 'l': do_settings_lockswipe_sensitivity(); break;
+            case 'P': case 'p': do_settings_pam(); break;
             case 'B': case 'b': return;
             default:
-                vfsc_err("Unrecognized option '%s'. Choose 1-9, L, U, CU, CM, LED or B.\n\n", line);
+                vfsc_err("Unrecognized option '%s'. Choose 1-9, L, P, U, CU, CM, LED or B.\n\n", line);
         }
     }
 }
@@ -6148,6 +6289,9 @@ static bool do_deploy(void) {
             vfsc_warn("Menu bar app bundle not found in shared/menubar/build, skipped.\n\n");
         }
     }
+
+    /* Fingerprint for sudo and su (v2.1.0): installed automatically, non-fatal. */
+    pam_ensure_installed();
 
     offer_preference_pane();
 
