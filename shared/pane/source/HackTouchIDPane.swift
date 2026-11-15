@@ -321,6 +321,7 @@ class HackTouchIDPane: NSPreferencePane {
 
     // Tabs actually offered in the segmented control (Sensor only when needed)
     private var tabPages: [NSView?] = []
+    private var pageStack: NSStackView?
     private var updatesTabIndex = -1
 
     private var refreshTimer: Timer?
@@ -385,6 +386,7 @@ class HackTouchIDPane: NSPreferencePane {
         page.spacing = 16
         page.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
         page.translatesAutoresizingMaskIntoConstraints = false
+        pageStack = page
         root.addSubview(page)
         NSLayoutConstraint.activate([
             page.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -430,12 +432,31 @@ class HackTouchIDPane: NSPreferencePane {
 
         self.mainView = root
         mainViewDidLoad()
+        scheduleContentHeightUpdate()
         return root
+    }
+
+    /// The pane's view has a fixed frame height, and System Settings only scrolls as far as that
+    /// height, so rows past it were cut off (the last row of the General tab after the sudo/su
+    /// row was added). Size the view to the content instead, never smaller than the default.
+    private func scheduleContentHeightUpdate() {
+        DispatchQueue.main.async { [weak self] in self?.updateContentHeight() }
+    }
+
+    private func updateContentHeight() {
+        guard let page = pageStack else { return }
+        page.layoutSubtreeIfNeeded()
+        let wanted = max(640, page.fittingSize.height + 8)
+        let current = mainView.frame.size
+        if abs(current.height - wanted) > 0.5 {
+            mainView.setFrameSize(NSSize(width: current.width, height: wanted))
+        }
     }
 
     @objc private func pageChanged(_ sender: NSSegmentedControl) {
         for (i, p) in tabPages.enumerated() { p?.isHidden = i != sender.selectedSegment }
         if sender.selectedSegment == updatesTabIndex && !updatesChecked { checkForUpdates() }
+        scheduleContentHeightUpdate()
     }
 
     override func mainViewDidLoad() {
@@ -1314,6 +1335,7 @@ class HackTouchIDPane: NSPreferencePane {
         lockSwipeHint.stringValue = touchLockAvailable()
             ? "Touch the sensor with an enrolled finger to lock the screen (Control-Command-Q). Lift your finger right after unlocking."
             : "Arm the sensor and lock the screen with a swipe (Control-Command-Q)."
+        scheduleContentHeightUpdate()
     }
 
     private func currentThreshold() -> Int {
