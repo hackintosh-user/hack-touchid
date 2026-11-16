@@ -1294,6 +1294,11 @@ static void handle_no_match(void) {
     if (fails >= MAX_FAILED_TOUCHES) {
         print_timestamp();
         printf("Touch failed %d times in a row -> giving up, use the password.\n", fails);
+        /* A bad calibration baseline (taken with a finger on the sensor or too soon after wake) is kept
+         * for the life of the agent, so recalibrate on the next session open. */
+        metallica_mis_agent_invalidate_calibration();
+        print_timestamp();
+        printf("Calibration will be redone on the next sensor session.\n");
         if (fail_is_pam) {
             htid_pam_report(HTID_PAM_RESULT_FAIL); /* the module falls back to the password */
             pam_episode_cleanup();
