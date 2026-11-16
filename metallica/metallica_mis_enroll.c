@@ -6,6 +6,7 @@
  * until cancelled), and the loop gives up after a few failed swipes.
  */
 
+#include <time.h>
 #include "metallica_mis_enroll.h"
 
 #include <stdbool.h>
@@ -914,36 +915,54 @@ static int s_agent_prints = 0;
 
 void metallica_mis_agent_set_abort_cb(int (*cb)(void)) { s_abort_cb = cb; }
 
+static long long mmis_agent_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 int metallica_mis_agent_open(void) {
     if (s_agent_open) return 0;
     s_agent_mode = true;
     g_mmis_db_quiet = 1;
     int rc = -1;
     bool device_open = false;
+    long long t0 = mmis_agent_now_ms(), t_dev = t0, t_sess = t0, t_db = t0, t_cal = t0;
+    bool calibrated_now = false;
 
     if (metallica_mis_open_device() != 0) goto fail;
     device_open = true;
     if (metallica_mis_send_init() != 0) goto fail;
+    t_dev = mmis_agent_now_ms();
     if (metallica_mis_open_calibration_session(&s_agent_tls) != 0) {
         if (!g_metallica_mis_session_rebooted) rc = mmis_session_fail_rc();
         goto fail;
     }
+    t_sess = mmis_agent_now_ms();
     int users = 0;
     if (mmis_db_list(&s_agent_tls, &users) != 0) goto fail;
     s_agent_prints = users;
+    t_db = mmis_agent_now_ms();
 
     if (!s_agent_calibrated) {
         if (ctx_setup(&s_agent_tls, &s_agent_ctx, "agent") != 0) goto fail;
         if (metallica_mis_do_calibrate_ex(&s_agent_tls, s_agent_ctx.calib, sizeof(s_agent_ctx.calib),
                                           &s_agent_ctx.calib_len) != 0) goto fail;
         s_agent_calibrated = true;
+        calibrated_now = true;
     }
+    t_cal = mmis_agent_now_ms();
     s_agent_open = true;
     g_mmis_db_quiet = 0;
+    printf("metallica_mis: [timing] sensor open took %lld ms: device+init %lld, session %lld "
+           "(includes any reset after a TLS alert), print list %lld, calibration %s%lld.\n",
+           t_cal - t0, t_dev - t0, t_sess - t_dev, t_db - t_sess,
+           calibrated_now ? "" : "skipped, ", calibrated_now ? t_cal - t_db : 0LL);
     return 0;
 
 fail:
     g_mmis_db_quiet = 0;
+    printf("metallica_mis: [timing] sensor open failed after %lld ms.\n", mmis_agent_now_ms() - t0);
     if (device_open) metallica_mis_close_device();
     return rc;
 }

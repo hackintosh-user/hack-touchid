@@ -1327,9 +1327,11 @@ static bool wake_settled(void) {
     if (now >= atomic_load(&g_wake_settle_until)) return true;
     if (now < atomic_load(&g_wake_floor_until)) return false;
     if (!metallica_mis_sensor_is_present()) return false;
+    long long since_wake = now - (atomic_load(&g_wake_settle_until) - WAKE_SETTLE_MS);
     atomic_store(&g_wake_settle_until, now);
     print_timestamp();
-    printf("Sensor is back on the USB bus, opening a session without waiting out the full settle time.\n");
+    printf("Sensor is back on the USB bus %lld ms after wake, opening a session without waiting out the full settle time.\n",
+           since_wake);
     return true;
 }
 
