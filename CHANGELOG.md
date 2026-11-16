@@ -12,6 +12,7 @@ All notable changes to the Hackintosh-TouchID fingerprint authentication project
 - Client: Deploy now installs the PAM module automatically when it is missing (never fails Deploy), the main menu status checklist has a `Sudo` row, and Settings `[P]` installs, reinstalls, turns it ON or OFF and uninstalls it.
 - System Settings pane: new switch "Fingerprint for sudo and su" (greyed out until the module is installed). The switch goes through the daemon (`request_pam_enable` / `request_pam_disable`, confirmed with `pam_enabled` / `pam_disabled`) and is stored as the flag file `/Library/Application Support/VFS5011/pam_disabled` (present means OFF, default ON). The PAM socket reads that file on every request, so no restart is needed. The pane has to be rebuilt (`shared/pane/source/build_prefpane.sh`).
 - Metallica MIS (Prometheus): the Metallica agent now has the same PAM socket and `TRIGGER_PAM` episode, so sudo and su work with that sensor too. The sensor's own match is the verdict, the stored password is never read. Not yet tested on a Metallica unit.
+- Metallica MIS (Prometheus): when the agent gives up after 4 failed touches it now forgets its kept calibration, so the next sensor session calibrates again. A bad baseline (taken with a finger on the sensor or right after wake) used to stay until the agent restarted, which made every touch fail.
 
 ---
 ## v2.0.2 | November 11th 2026
