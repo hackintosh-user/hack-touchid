@@ -113,7 +113,8 @@ int metallica_mis_do_verify_test(void);
 /* Polled while waiting for a finger (about every 300 ms). Return non-zero to stop waiting. */
 void metallica_mis_agent_set_abort_cb(int (*cb)(void));
 
-/* Opens the sensor, secure session, counts stored prints, calibrates (first call only).
+/* Opens the sensor, secure session, counts stored prints, calibrates (first call only,
+ * or again after metallica_mis_agent_invalidate_calibration()).
  * Returns 0, -1, or MMIS_SESSION_FAILED when the host identity is wrong. */
 int metallica_mis_agent_open(void);
 
@@ -124,5 +125,9 @@ int metallica_mis_agent_prints(void);
 int metallica_mis_agent_identify(uint32_t *usr_id, uint16_t *subtype);
 
 void metallica_mis_agent_close(void);
+
+/* Forgets the kept calibration so the next metallica_mis_agent_open() calibrates again.
+ * Used after the agent gave up on a run of failed touches (a bad baseline survives reopen). */
+void metallica_mis_agent_invalidate_calibration(void);
 
 #endif /* __METALLICA_MIS_ENROLL_H */
