@@ -15,11 +15,11 @@
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.0.2</string>
+	<string>2.1.0</string>
 	<key>CFBundleVersion</key>
-	<string>2.0.2</string>
+	<string>2.1.0</string>
 	<key>HTIDPaneBuildDate</key>
-	<string>2026-11-15</string>
+	<string>2026-11-16</string>
 	<key>HTIDPaneSourceHash</key>
 	<string>da98eb40d8d9eac3</string>
 	<key>LSMinimumSystemVersion</key>
