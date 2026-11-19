@@ -213,6 +213,16 @@ static atomic_bool g_session_held = false;   /* polling thread: a sensor session
 static atomic_llong g_wake_settle_until = 0; /* monotonic ms: open the sensor by this time at the latest */
 static atomic_llong g_wake_floor_until = 0;  /* monotonic ms: do not open the sensor before this */
 
+/* Background calibration. The calibration baseline must be captured with NO finger on the sensor: a
+ * baseline taken with a finger resting on it (an impatient touch while the lock screen opens the sensor)
+ * is kept for the life of the agent and makes every later touch fail, or read as a phantom press. So when
+ * the baseline is missing (agent start, or after a lockout) it is taken while the screen is unlocked and
+ * the user is away from the sensor, never on the unlock path. */
+#define PREWARM_AFTER_START_MS  4000   /* quiet time after the agent starts */
+#define PREWARM_AFTER_UNLOCK_MS 5000   /* quiet time after an unlock: the unlocking finger is lifted by then */
+#define PREWARM_RETRY_MS        300000 /* after a failed background calibration, try again no sooner than this */
+static atomic_llong g_prewarm_not_before_ms = 0; /* monotonic ms: no background calibration before this */
+
 /* Auth triggers, same as the VFS5011 daemon: the lock screen, or a
  * SecurityAgent / System Settings padlock with a secure text field. */
 
@@ -814,6 +824,7 @@ static void on_screen_unlocked(void) {
     atomic_store(&g_trigger_source, TRIGGER_NONE);
     atomic_store(&g_lock_screen_since_ms, 0);
     atomic_store(&g_failed_swipes, 0);
+    atomic_store(&g_prewarm_not_before_ms, monotonic_ms() + PREWARM_AFTER_UNLOCK_MS);
     if (g_trigger_secure_field) { CFRelease(g_trigger_secure_field); g_trigger_secure_field = NULL; }
 
     /* Never keep the password resident while idle. */
@@ -1335,6 +1346,17 @@ static bool wake_settled(void) {
     return true;
 }
 
+/* True when the calibration baseline is missing and it is a safe moment to take it: idle, screen unlocked
+ * for a while, no sleep or wake in progress, nobody else holding the sensor, sensor on the USB bus. */
+static bool prewarm_allowed(void) {
+    if (metallica_mis_agent_is_calibrated()) return false;
+    if (monotonic_ms() < atomic_load(&g_prewarm_not_before_ms)) return false;
+    if (yield_is_active() || atomic_load(&g_sleeping) || !atomic_load(&g_running)) return false;
+    if (screen_is_locked_now()) return false;
+    if (!wake_settled()) return false;
+    return metallica_mis_sensor_is_present();
+}
+
 static void *polling_thread_main(void *arg) {
     (void)arg;
     bool session_open = false;
@@ -1364,6 +1386,22 @@ static void *polling_thread_main(void *arg) {
             open_failures = 0;
             error_streak = 0;
             lock_retries = 0;
+            if (st == STATE_IDLE && prewarm_allowed()) {
+                /* Take the missing calibration now, with the screen unlocked, so the lock screen never has to. */
+                atomic_store(&g_session_held, true);
+                int prc = metallica_mis_agent_open();
+                if (prc == 0) {
+                    metallica_mis_agent_close();
+                    print_timestamp();
+                    printf("Sensor calibrated in the background, the lock screen will open without calibrating.\n");
+                } else {
+                    atomic_store(&g_prewarm_not_before_ms, monotonic_ms() + PREWARM_RETRY_MS);
+                    print_timestamp();
+                    printf("Background calibration did not finish, the lock screen will calibrate instead.\n");
+                }
+                atomic_store(&g_session_held, false);
+                continue;
+            }
             usleep(200000);
             continue;
         }
@@ -1669,6 +1707,7 @@ int main(int argc, char **argv) {
     }
 
     pthread_t poll_thread;
+    atomic_store(&g_prewarm_not_before_ms, monotonic_ms() + PREWARM_AFTER_START_MS);
     if (pthread_create(&poll_thread, NULL, polling_thread_main, NULL) != 0) {
         fprintf(stderr, "Failed to start polling thread: %s\n", strerror(errno));
         return 1;
