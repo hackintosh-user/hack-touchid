@@ -971,6 +971,8 @@ int metallica_mis_agent_prints(void) { return s_agent_prints; }
 
 void metallica_mis_agent_invalidate_calibration(void) { s_agent_calibrated = false; }
 
+bool metallica_mis_agent_is_calibrated(void) { return s_agent_calibrated; }
+
 void metallica_mis_agent_close(void) {
     if (!s_agent_open) return;
     simple_app(&s_agent_tls, "glow_end_scan", GLOW_END_SCAN, sizeof(GLOW_END_SCAN));

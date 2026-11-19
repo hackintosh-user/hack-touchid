@@ -1,6 +1,7 @@
 #ifndef __METALLICA_MIS_ENROLL_H
 #define __METALLICA_MIS_ENROLL_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /*
@@ -129,5 +130,8 @@ void metallica_mis_agent_close(void);
 /* Forgets the kept calibration so the next metallica_mis_agent_open() calibrates again.
  * Used after the agent gave up on a run of failed touches (a bad baseline survives reopen). */
 void metallica_mis_agent_invalidate_calibration(void);
+
+/* True while a calibration is kept in memory (the next open will not calibrate). */
+bool metallica_mis_agent_is_calibrated(void);
 
 #endif /* __METALLICA_MIS_ENROLL_H */
