@@ -11,7 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # scripts/
 cd "$SCRIPT_DIR/.."                           # repo root
 . "$SCRIPT_DIR/ht_env.sh"
 
-OUT_DIR="shared/pam/build"
+# HT_PAM_OUT lets the installer build into a temp folder when the repo folder is not writable.
+OUT_DIR="${HT_PAM_OUT:-shared/pam/build}"
 mkdir -p "$OUT_DIR"
 
 ARCH_FLAGS=""
