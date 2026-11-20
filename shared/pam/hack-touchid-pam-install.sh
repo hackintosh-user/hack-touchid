@@ -21,6 +21,9 @@
 
 set -e
 
+TMP_BUILD=""
+trap '[ -n "$TMP_BUILD" ] && rm -rf "$TMP_BUILD"; true' EXIT
+
 MARK="# hack-touchid"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -120,11 +123,16 @@ do_install() {
     local built="$REPO_ROOT/shared/pam/build/$MODULE_NAME"
     if [ ! -f "$built" ]; then
         echo "Building $MODULE_NAME..."
+        # Build in a temp folder, not in the repo: the repo folder is often not writable by the
+        # user (for example when it was created with sudo), and the build used to fail there.
+        TMP_BUILD="$(mktemp -d /tmp/htid-pam-build.XXXXXX)"
         if [ -n "$SUDO_USER" ] && [ "$HTID_PAM_TEST" != "1" ]; then
-            sudo -u "$SUDO_USER" bash "$REPO_ROOT/scripts/build_pam.sh"
+            chown "$SUDO_USER" "$TMP_BUILD"
+            sudo -u "$SUDO_USER" env HT_PAM_OUT="$TMP_BUILD" bash "$REPO_ROOT/scripts/build_pam.sh"
         else
-            bash "$REPO_ROOT/scripts/build_pam.sh"
+            HT_PAM_OUT="$TMP_BUILD" bash "$REPO_ROOT/scripts/build_pam.sh"
         fi
+        built="$TMP_BUILD/$MODULE_NAME"
     fi
     [ -f "$built" ] || { echo "error: $built was not built." >&2; exit 1; }
 
