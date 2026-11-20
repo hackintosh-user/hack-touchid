@@ -927,11 +927,12 @@ int metallica_mis_agent_open(void) {
     g_mmis_db_quiet = 1;
     int rc = -1;
     bool device_open = false;
-    long long t0 = mmis_agent_now_ms(), t_dev = t0, t_sess = t0, t_db = t0, t_cal = t0;
+    long long t0 = mmis_agent_now_ms(), t_usb = t0, t_dev = t0, t_sess = t0, t_db = t0, t_cal = t0;
     bool calibrated_now = false;
 
     if (metallica_mis_open_device() != 0) goto fail;
     device_open = true;
+    t_usb = mmis_agent_now_ms();
     if (metallica_mis_send_init() != 0) goto fail;
     t_dev = mmis_agent_now_ms();
     if (metallica_mis_open_calibration_session(&s_agent_tls) != 0) {
@@ -958,6 +959,11 @@ int metallica_mis_agent_open(void) {
            "(includes any reset after a TLS alert), print list %lld, calibration %s%lld.\n",
            t_cal - t0, t_dev - t0, t_sess - t_dev, t_db - t_sess,
            calibrated_now ? "" : "skipped, ", calibrated_now ? t_cal - t_db : 0LL);
+    printf("metallica_mis: [timing] device+init detail: usb open %lld, rominfo %lld, cmd19 %lld, "
+           "fw info %lld, init blob %lld, clean slate %lld, busy retries %d, stale resets %d.\n",
+           t_usb - t0, g_mmis_init_timing.rominfo, g_mmis_init_timing.cmd19, g_mmis_init_timing.fwinfo,
+           g_mmis_init_timing.init_blob, g_mmis_init_timing.clean_slate,
+           g_mmis_init_timing.busy_retries, g_mmis_init_timing.stale_resets);
     return 0;
 
 fail:

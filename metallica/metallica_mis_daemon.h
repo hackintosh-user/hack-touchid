@@ -89,6 +89,14 @@ bool metallica_mis_sensor_is_present(void);
  * get_fw_info, hardcoded init blob, clean-slate blob if needed).
  * Returns 0 on success, -1 on failure. Safe to run repeatedly --
  * does not write pairing state. Must succeed before do_pairing(). */
+/* Where the time went in the last metallica_mis_send_init(), in ms (read by the agent timing log). */
+typedef struct {
+    long long rominfo, cmd19, fwinfo, init_blob, clean_slate;
+    int busy_retries;   /* 0x0104 busy answers that were retried (each one costs a wait) */
+    int stale_resets;   /* resets after a TLS alert from an earlier session */
+} mmis_init_timing_t;
+extern mmis_init_timing_t g_mmis_init_timing;
+
 int metallica_mis_send_init(void);
 
 /* Real pairing: writes partition table + cert material to the

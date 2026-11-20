@@ -71,6 +71,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <sys/time.h>
@@ -78,6 +79,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 
+#include "metallica_mis_daemon.h"
 #include "metallica_mis_proto.h"
 #include "metallica_mis_tls.h"
 #include "metallica_mis_debug.h"
@@ -982,10 +984,20 @@ static int mmis_recover_stale_session(void) {
     return -1;
 }
 
+mmis_init_timing_t g_mmis_init_timing;
+
+static long long mmis_init_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 int metallica_mis_send_init(void) {
     unsigned char reply[256];
     int n;
     int stale_resets = 0;
+    memset(&g_mmis_init_timing, 0, sizeof(g_mmis_init_timing));
+    long long t_step = mmis_init_now_ms();
 
     mmis_dbg("send_init: begin plaintext bootstrap (RomInfo, cmd_19, get_fw_info, init_hardcoded[, clean slate])");
 
@@ -1007,6 +1019,7 @@ int metallica_mis_send_init(void) {
         if (n >= 3 && reply[0] == 0x15 && reply[1] == 0x03 && reply[2] == 0x03) {
             if (stale_resets < 2) {
                 stale_resets++;
+                g_mmis_init_timing.stale_resets = stale_resets;
                 fprintf(stderr, "metallica_mis: sensor answered with a TLS alert; it is still "
                                  "in a session from an earlier run. Resetting the device "
                                  "(%d/2)...\n", stale_resets);
@@ -1026,6 +1039,7 @@ int metallica_mis_send_init(void) {
         if (n >= 2) {
             unsigned short stat = (unsigned short)reply[0] | ((unsigned short)reply[1] << 8);
             if (stat == 0x0104 && tries < 20) {
+                g_mmis_init_timing.busy_retries++;
                 fprintf(stderr, "metallica_mis: RomInfo.get() busy (0x0104), retrying "
                                  "(%d/20)...\n", tries + 1);
                 usleep(500000);
@@ -1038,6 +1052,7 @@ int metallica_mis_send_init(void) {
         fprintf(stderr, "metallica_mis: RomInfo.get() failed\n");
         return -1;
     }
+    { long long t = mmis_init_now_ms(); g_mmis_init_timing.rominfo = t - t_step; t_step = t; }
 
     /* Step 2: unknown plaintext init command. python-validity doesn't
      * appear to check this reply's status the same way (TODO: confirm
@@ -1045,6 +1060,7 @@ int metallica_mis_send_init(void) {
      * move on rather than hard-failing if status looks odd here. */
     n = cmd(metallica_mis_cmd_19, sizeof(metallica_mis_cmd_19), reply, sizeof(reply));
     if (n < 0) return -1;
+    { long long t = mmis_init_now_ms(); g_mmis_init_timing.cmd19 = t - t_step; t_step = t; }
 
     /* Step 3: get_fw_info() -- same busy-retry as step 1 (see doc
      * comment above); this is the other command the #272 report
@@ -1058,6 +1074,7 @@ int metallica_mis_send_init(void) {
         if (n >= 2) {
             unsigned short stat = (unsigned short)reply[0] | ((unsigned short)reply[1] << 8);
             if (stat == 0x0104 && tries < 20) {
+                g_mmis_init_timing.busy_retries++;
                 fprintf(stderr, "metallica_mis: get_fw_info() busy (0x0104), retrying "
                                  "(%d/20)...\n", tries + 1);
                 usleep(500000);
@@ -1091,6 +1108,7 @@ int metallica_mis_send_init(void) {
     } else {
         fw_err = (unsigned short)reply[2] | ((unsigned short)reply[3] << 8);
     }
+    { long long t = mmis_init_now_ms(); g_mmis_init_timing.fwinfo = t - t_step; t_step = t; }
     mmis_dbg("send_init: get_fw_info err field = 0x%04x (%s)", fw_err, fw_err ? "firmware extension NOT loaded, clean-slate path" : "firmware extension already loaded");
 
     /* Step 4: always send the hardcoded init blob. */
@@ -1100,6 +1118,7 @@ int metallica_mis_send_init(void) {
         fprintf(stderr, "metallica_mis: init_hardcoded blob rejected\n");
         return -1;
     }
+    { long long t = mmis_init_now_ms(); g_mmis_init_timing.init_blob = t - t_step; t_step = t; }
 
     /* Step 5: only if fwext isn't loaded yet. */
     if (fw_err != 0) {
@@ -1125,6 +1144,7 @@ int metallica_mis_send_init(void) {
          * convention; don't treat it as fatal, matching upstream. */
     }
 
+    if (fw_err != 0) g_mmis_init_timing.clean_slate = mmis_init_now_ms() - t_step;
     fprintf(stderr, "metallica_mis: plaintext bootstrap stage completed OK\n");
     mmis_dbg("send_init: done");
     return 0;
