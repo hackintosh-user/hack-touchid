@@ -266,6 +266,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             if !AuthOverlay.cardWorksOnLockScreen { self?.authOverlay.hide() }
         }
 
+        // Unlocked by any route (password, Apple Watch...): the Waiting card has done its job.
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self = self, self.authEpisodeStartedLocked else { return }
+            self.authEpisodeOpen = false // keep authEpisodeStartedLocked: a late "cancelled" must stay quiet
+            self.authOverlay.hideWaiting()
+        }
+
         // Preview for design checks: `HackintoshTouchID --overlay-demo` cycles every card.
         if CommandLine.arguments.contains("--overlay-demo") {
             authOverlay.runDemo()
@@ -287,11 +296,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        // This laptop wakes its screen slowly, and the display can drop our window while it
+        // sleeps. Put the Waiting card back as the screen comes up, so it is there to see.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleScreensWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
     }
 
     @objc private func handleWake() {
         checkDaemonHealth()
         checkForClientUpdate()
+        handleScreensWake()
+    }
+
+    @objc private func handleScreensWake() {
+        for delay in [0.0, 1.5, 4.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self = self, self.authEpisodeOpen else { return }
+                self.authOverlay.reassertWaiting()
+            }
+        }
     }
 
     // MARK: - Login item
@@ -1000,6 +1027,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 self.suppressedEpisode = false
                 self.authEpisodeOpen = true
                 self.authEpisodeStartedLocked = self.isScreenLocked()
+                // On the lock screen the Waiting card stays until unlock, cancel or lockout.
+                self.authOverlay.waitingIsSticky = self.authEpisodeStartedLocked
                 self.showAuth(.waiting)
 
             case VFS5011Notification.swipeSuccess:
@@ -1251,6 +1280,9 @@ final class AuthOverlay {
     private var panel: NSPanel?
     private var hideWork: DispatchWorkItem?
     private let waitingSafetySeconds: TimeInterval = 90 // never leave a stale Waiting card up
+    // Lock screen episodes: no safety timer, the card stays until unlock, cancel or lockout.
+    var waitingIsSticky = false
+    private var currentKind: AuthOverlayKind?
 
     // EXPERIMENT: try to draw the card above the lock screen. Off by default; turn on with
     //   defaults write com.vfs5011.hackintosh.menubar OverlayOnLockScreen -bool YES
@@ -1303,11 +1335,27 @@ final class AuthOverlay {
         DispatchQueue.main.async { [weak self] in self?.dismiss() }
     }
 
+    // Hides the card only if it is the Waiting card (a result card is allowed to finish).
+    func hideWaiting() {
+        DispatchQueue.main.async { [weak self] in
+            if self?.currentKind == .waiting { self?.dismiss() }
+        }
+    }
+
+    // After a screen wake: bring the Waiting card back if it is the card that should be up.
+    func reassertWaiting() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.currentKind == .waiting else { return }
+            self.present(.waiting, thenWaiting: false)
+        }
+    }
+
     private func present(_ kind: AuthOverlayKind, thenWaiting: Bool) {
         hideWork?.cancel()
         let panel = self.panel ?? makePanel()
         self.panel = panel
 
+        currentKind = kind
         let card = AuthCardView(kind: kind)
         card.onClose = { [weak self] in self?.dismiss() }
         let size = card.preferredSize
@@ -1337,6 +1385,7 @@ final class AuthOverlay {
 
         if AuthOverlay.overlayDebugLog { scheduleLockDiagnostics(for: panel, kind: kind) }
 
+        if kind == .waiting && waitingIsSticky { hideWork = nil; return }
         let life = kind.lifetime ?? waitingSafetySeconds
         let work = DispatchWorkItem { [weak self] in
             if thenWaiting { self?.present(.waiting, thenWaiting: false) } else { self?.dismiss() }
@@ -1387,6 +1436,7 @@ final class AuthOverlay {
     private func dismiss() {
         hideWork?.cancel()
         hideWork = nil
+        currentKind = nil
         guard let panel = panel, panel.isVisible else { return }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.18
