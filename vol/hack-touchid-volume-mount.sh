@@ -52,10 +52,60 @@ MOUNT_POINT="/private/var/db/vfsclient_data"
 KEYCHAIN_SERVICE="com.mohammad.vfsclient.volume"
 KEYCHAIN_ACCOUNT="vfsstore"
 ADOPT_MAX_ATTEMPTS=3
+# Disk identifier of the store found last time. Lets a normal mount skip the slow
+# `diskutil apfs list` scan of every container (the multi-second part of a lock screen
+# episode). Only a hint: it is checked against the volume name every time, and any
+# doubt falls back to the full scan below.
+CACHE_FILE="/Library/Application Support/VFS5011/store_diskid"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Must run as root." >&2
     exit 1
+fi
+
+# Fast path for the plain "mount it" call (no --list/--link): use the remembered disk
+# identifier if it still names the store. Prints the mount point and returns 0 on success,
+# returns 1 (printing nothing on stdout) to fall back to the full scan.
+fast_mount() {
+    local id info vname mpath pass out
+    [ -f "$CACHE_FILE" ] || return 1
+    id=$(head -n 1 "$CACHE_FILE" 2>/dev/null | tr -cd 'a-zA-Z0-9')
+    [ -n "$id" ] || return 1
+    info=$(diskutil info "$id" 2>/dev/null) || return 1
+    vname=$(echo "$info" | awk -F': +' '/Volume Name:/{print $2; exit}')
+    [ "$vname" = "$VOLUME_NAME" ] || return 1
+    mpath=$(echo "$info" | awk -F': +' '/Mount Point:/{print $2; exit}')
+    if [ -n "$mpath" ]; then
+        chown root:wheel "$mpath" && chmod 700 "$mpath" && echo "$mpath"
+        return 0
+    fi
+    pass=$(security find-generic-password -a "$KEYCHAIN_ACCOUNT" -s "$KEYCHAIN_SERVICE" -w \
+        /Library/Keychains/System.keychain 2>/dev/null || true)
+    [ -n "$pass" ] || return 1
+    if out=$(echo "$pass" | diskutil apfs unlockVolume "$id" -mountpoint "$MOUNT_POINT" -stdinpassphrase 2>&1); then
+        :
+    else
+        case "$out" in
+            *-69589*|*"not locked"*) diskutil mount -mountPoint "$MOUNT_POINT" "$id" >/dev/null 2>&1 || return 1 ;;
+            *) return 1 ;;
+        esac
+    fi
+    chown root:wheel "$MOUNT_POINT" && chmod 700 "$MOUNT_POINT" && echo "$MOUNT_POINT"
+    return 0
+}
+
+remember_store() {
+    mkdir -p "$(dirname "$CACHE_FILE")" 2>/dev/null || true
+    echo "$1" > "$CACHE_FILE" 2>/dev/null || true
+}
+
+if [ -z "${1:-}" ]; then
+    START=$SECONDS
+    if fast_mount; then
+        echo "volume mount: fast path, $((SECONDS - START))s" >&2
+        exit 0
+    fi
+    echo "volume mount: fast path not used, full scan" >&2
 fi
 
 # Every APFS volume named exactly $VOLUME_NAME, anywhere, one disk
@@ -315,6 +365,7 @@ if [ "${#CANDIDATES[@]}" -eq 1 ]; then
 
     EXISTING_MOUNT=$(candidate_mount_point "$DISKID")
     if [ -n "$EXISTING_MOUNT" ]; then
+        remember_store "$DISKID"
         finish_mount "$EXISTING_MOUNT"
         exit 0
     fi
@@ -326,6 +377,7 @@ if [ "${#CANDIDATES[@]}" -eq 1 ]; then
     fi
 
     if unlock_and_mount "$DISKID"; then
+        remember_store "$DISKID"
         finish_mount "$MOUNT_POINT"
         exit 0
     fi
@@ -383,6 +435,7 @@ if [ -n "$DATA_DISKID" ]; then
     echo "Using $DATA_DISKID as the real store. The other(s) look like stale" >&2
     echo "duplicates -- consider \"diskutil apfs deleteVolume <diskid>\" on them" >&2
     echo "once you've confirmed you don't need them." >&2
+    remember_store "$DATA_DISKID"
     finish_mount "$DATA_MOUNT"
     exit 0
 fi
