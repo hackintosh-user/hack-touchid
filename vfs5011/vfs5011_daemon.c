@@ -61,6 +61,7 @@
 #include "vfs5011_led.h"
 #include "hack-touchid-matcher.h"
 #include "hack-touchid-menubar-ipc.h"
+#include "hack-touchid-pam-server.h" /* v2.1.0: fingerprint for sudo/su through pam_hacktouchid.so */
 
 #define VFS5011_VID 0x138a
 #define VFS5011_PID 0x0018
@@ -998,7 +999,11 @@ static atomic_int g_running = 1;
 typedef enum {
     TRIGGER_NONE,
     TRIGGER_LOCK_SCREEN,
-    TRIGGER_PADLOCK
+    TRIGGER_PADLOCK,
+    /* A PAM request over the root-only socket (sudo, su, any terminal).
+     * Same capture/match loop, but the result goes back to the waiting PAM
+     * module instead of being typed, and the stored password is never read. */
+    TRIGGER_PAM
 } trigger_source_t;
 
 static atomic_int g_trigger_source = TRIGGER_NONE;
@@ -1625,20 +1630,33 @@ static int load_templates_for_episode(void) {
      * stored password doesn't block polling; it just means a later
      * match will report "no password available" same as before. */
     g_cached_password_valid = 0;
-    char password_path[PATH_MAX];
-    snprintf(password_path, sizeof(password_path), "%s/%s", mount_path, PASSWORD_FILENAME);
-    FILE *pf = fopen(password_path, "r");
-    if (pf) {
-        size_t n = fread(g_cached_password, 1, MAX_PASSWORD_LEN, pf);
-        g_cached_password[n] = '\0';
-        fclose(pf);
-        g_cached_password_valid = 1;
+    if (atomic_load(&g_trigger_source) == TRIGGER_PAM) {
+        /* A PAM episode only needs a yes or no, so the login password is
+         * never read into memory for it. */
     } else {
-        fprintf(stderr, "No stored password found (run hack-touchid-store-password.sh first).\n");
+        char password_path[PATH_MAX];
+        snprintf(password_path, sizeof(password_path), "%s/%s", mount_path, PASSWORD_FILENAME);
+        FILE *pf = fopen(password_path, "r");
+        if (pf) {
+            size_t n = fread(g_cached_password, 1, MAX_PASSWORD_LEN, pf);
+            g_cached_password[n] = '\0';
+            fclose(pf);
+            g_cached_password_valid = 1;
+        } else {
+            fprintf(stderr, "No stored password found (run hack-touchid-store-password.sh first).\n");
+        }
     }
 
     int enrolled_count = g_enrolled_count; /* snapshot before unlocking, for the check below */
     pthread_mutex_unlock(&g_templates_lock);
+
+    /* Everything needed is in memory now, so let a waiting swipe be scored right away
+     * instead of after the unmount (which takes seconds). Only while the episode is still
+     * running, so a stale "ready" can never outlive an unlock. */
+    if (rc == 0 && enrolled_count > 0 && atomic_load(&g_state) == STATE_POLLING) {
+        atomic_store(&g_templates_ready, true);
+        tmark("templates loaded, unmounting");
+    }
 
     unmount_template_volume();
 
@@ -1664,7 +1682,9 @@ static void *load_templates_thread_main(void *arg) {
     (void)arg;
 
     if (load_templates_for_episode() == 0) {
-        atomic_store(&g_templates_ready, true);
+        /* Already flipped inside load_templates_for_episode() while the episode was live;
+         * only set it here if it still is, so a late unlock can't leave it stuck on. */
+        if (atomic_load(&g_state) == STATE_POLLING) atomic_store(&g_templates_ready, true);
     } else {
         /* Only actually meaningful if we're still mid-episode -- if the
          * screen was already unlocked while this was loading,
@@ -1673,8 +1693,10 @@ static void *load_templates_thread_main(void *arg) {
         if (atomic_load(&g_state) == STATE_POLLING) {
             print_timestamp();
             printf("Staying IDLE (no templates available).\n");
+            bool was_pam = (atomic_load(&g_trigger_source) == TRIGGER_PAM);
             settle_to_idle();
             atomic_store(&g_trigger_source, TRIGGER_NONE);
+            if (was_pam) htid_pam_report(HTID_PAM_RESULT_FAIL); /* module falls back to the password */
             if (g_trigger_secure_field) { CFRelease(g_trigger_secure_field); g_trigger_secure_field = NULL; }
             vfs5011_notify_swipe_cancelled(); /* we already told them to swipe -- let the menu bar app walk that back */
         }
@@ -1687,7 +1709,16 @@ static void *load_templates_thread_main(void *arg) {
 static void arm_polling_for_trigger(trigger_source_t source, pid_t target_pid,
                                      AXUIElementRef secure_field, const char *label);
 
+static void pam_episode_cleanup(void); /* defined with the other PAM hooks below */
+
 static void on_screen_locked(void) {
+    /* The lock screen outranks a running sudo/su request: end that one (the
+     * module falls back to the password) so the lock screen can arm. */
+    if (atomic_load(&g_trigger_source) == TRIGGER_PAM) {
+        htid_pam_report(HTID_PAM_RESULT_FAIL);
+        pam_episode_cleanup();
+        atomic_store(&g_state, STATE_IDLE);
+    }
     int st = atomic_load(&g_state);
     if (st != STATE_IDLE && st != STATE_LOCK_ARMED) return; /* shouldn't happen, but don't interrupt an episode */
     atomic_store(&g_lock_screen_since_ms, monotonic_ms());
@@ -1787,6 +1818,45 @@ static void arm_polling_for_trigger(trigger_source_t source, pid_t target_pid,
         return;
     }
     pthread_detach(loader_thread);
+}
+
+/* ------------------------------------------------------------------ *
+ * PAM episode (v2.1.0)
+ * ------------------------------------------------------------------ *
+ * hack-touchid-pam-server.h owns the socket and calls these two hooks from
+ * its own threads. begin() arms the same POLLING state the lock screen uses,
+ * tagged TRIGGER_PAM; the polling thread reports the verdict back with
+ * htid_pam_report(). Nothing here types anything. */
+static void pam_episode_cleanup(void) {
+    atomic_store(&g_trigger_source, TRIGGER_NONE);
+    /* The lock-screen path clears these in on_screen_unlocked(); a PAM
+     * episode never unlocks anything, so it clears them itself. */
+    pthread_mutex_lock(&g_templates_lock);
+    g_enrolled_count = 0;
+    memset(g_cached_password, 0, sizeof(g_cached_password));
+    g_cached_password_valid = 0;
+    pthread_mutex_unlock(&g_templates_lock);
+    atomic_store(&g_templates_ready, false);
+}
+
+static int pam_begin(void) {
+    int st = atomic_load(&g_state);
+    if (st != STATE_IDLE && st != STATE_LOCK_ARMED) return 1; /* lock screen, padlock or a client yield owns the sensor */
+    if (screen_is_locked_now()) return 1;
+    if (!vfs5011_scanning_is_enabled() || !vfs5011_sensor_is_present()) return 1;
+    arm_polling_for_trigger(TRIGGER_PAM, 0, NULL, "PAM request (sudo/su)");
+    return atomic_load(&g_state) == STATE_POLLING ? 0 : 1;
+}
+
+static void pam_cancel(void) {
+    if (atomic_load(&g_trigger_source) != TRIGGER_PAM) return; /* already finished by itself */
+    if (atomic_load(&g_state) == STATE_POLLING) {
+        print_timestamp();
+        printf("PAM request ended without a match (timeout or the terminal gave up) -> IDLE.\n");
+        settle_to_idle();
+        vfs5011_notify_swipe_cancelled();
+    }
+    pam_episode_cleanup();
 }
 
 /* Process names that legitimately ask for the macOS LOGIN password via
@@ -2135,7 +2205,17 @@ static void *polling_thread_main(void *arg) {
         print_timestamp();
         printf("Poll swipe scored %d (threshold %d)\n", best_score, match_threshold);
 
-        if (best_score >= match_threshold) {
+        if (best_score >= match_threshold && atomic_load(&g_trigger_source) == TRIGGER_PAM) {
+            /* PAM episode: tell the waiting module, type nothing. */
+            print_timestamp();
+            printf("MATCH -- PAM request approved.\n");
+            play_success_sound();
+            vfs5011_episode_matched();
+            vfs5011_notify_swipe_success();
+            htid_pam_report(HTID_PAM_RESULT_OK);
+            pam_episode_cleanup();
+            settle_to_idle();
+        } else if (best_score >= match_threshold) {
             print_timestamp();
             printf("MATCH -- checking target is still focused before typing...\n");
 
@@ -2215,6 +2295,7 @@ static void *polling_thread_main(void *arg) {
             led_queue_red();
 
             int fails = atomic_fetch_add(&g_failed_swipes, 1) + 1;
+            bool fail_is_pam = (atomic_load(&g_trigger_source) == TRIGGER_PAM);
             if (fails >= MAX_FAILED_SWIPES) {
                 /* Out of attempts for this episode (lock screen or
                  * padlock): stop scanning, let the password field take
@@ -2229,6 +2310,10 @@ static void *polling_thread_main(void *arg) {
                 led_show_queued_red_now();
                 settle_to_idle();
                 vfs5011_notify_swipe_lockout();
+                if (fail_is_pam) {
+                    htid_pam_report(HTID_PAM_RESULT_FAIL); /* module falls back to the password */
+                    pam_episode_cleanup();
+                }
             } else {
                 print_timestamp();
                 printf("Swipe failed (%d of %d).\n", fails, MAX_FAILED_SWIPES);
@@ -2439,6 +2524,13 @@ int main(int argc, char **argv) {
     vfs5011_set_lockswipe_handler(on_lockswipe_setting_changed);
     vfs5011_set_yield_handler(on_yield_request);
     vfs5011_menubar_ipc_init();
+    {
+        static const htid_pam_hooks_t pam_hooks = { pam_begin, pam_cancel };
+        if (htid_pam_server_start(&pam_hooks) == 0)
+            printf("PAM socket ready (%s), sudo/su fingerprint available to enabled users.\n", HTID_PAM_SOCKET_PATH);
+        else
+            printf("PAM socket could not be started (%s), sudo/su fingerprint unavailable.\n", strerror(errno));
+    }
     lockswipe_try_arm(); /* restore swipe-to-lock after a daemon restart */
 
     CFRunLoopRun();
