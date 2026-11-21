@@ -1650,6 +1650,14 @@ static int load_templates_for_episode(void) {
     int enrolled_count = g_enrolled_count; /* snapshot before unlocking, for the check below */
     pthread_mutex_unlock(&g_templates_lock);
 
+    /* Everything needed is in memory now, so let a waiting swipe be scored right away
+     * instead of after the unmount (which takes seconds). Only while the episode is still
+     * running, so a stale "ready" can never outlive an unlock. */
+    if (rc == 0 && enrolled_count > 0 && atomic_load(&g_state) == STATE_POLLING) {
+        atomic_store(&g_templates_ready, true);
+        tmark("templates loaded, unmounting");
+    }
+
     unmount_template_volume();
 
     if (rc != 0 || enrolled_count == 0) {
@@ -1674,7 +1682,9 @@ static void *load_templates_thread_main(void *arg) {
     (void)arg;
 
     if (load_templates_for_episode() == 0) {
-        atomic_store(&g_templates_ready, true);
+        /* Already flipped inside load_templates_for_episode() while the episode was live;
+         * only set it here if it still is, so a late unlock can't leave it stuck on. */
+        if (atomic_load(&g_state) == STATE_POLLING) atomic_store(&g_templates_ready, true);
     } else {
         /* Only actually meaningful if we're still mid-episode -- if the
          * screen was already unlocked while this was loading,
